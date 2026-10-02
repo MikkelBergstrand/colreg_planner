@@ -1,0 +1,146 @@
+# scenarios/viz_reference.yaml
+#
+# Reference only — NOT loaded by any script. This is every plotting/output
+# option the `viz:` block accepts, in one place, with its default (the value
+# you get if you leave it out) and which script(s) honor it.
+#
+# The individual scenario configs (scenarios/real/*.yaml,
+# scenarios/simulation/*.yaml) only list the options that differ from the
+# defaults below — copy whichever block you need from here into a scenario's
+# `viz:` section to override it.
+#
+# Defaults come from VizConfig (src/visualization/live_viz.py) unless noted
+# "AIS-only", which means the key is read directly out of the YAML by
+# scripts/run_AIS.py rather than going through VizConfig — those only apply
+# to run_AIS.py, not run_simulation.py.
+
+viz:
+
+  # --- Figure / view window -------------------------------------------------
+  figsize: [12, 10]            # [in] matplotlib figure size
+  padding: 100.0                # [m] margin around the full trajectory span (all frames).
+                                 # Usually a small knob — the bounding box it pads is normally
+                                 # much bigger than this. Use zoom_radius_m or xlim/ylim for a
+                                 # real zoom.
+  zoom_radius_m: null            # [m] if set, view is a square of this half-width centered on
+                                 # the vessels' positions at start_step (overrides padding)
+  xlim: null                     # e.g. [-500, 500] — explicit NED east range [m]. Sets the view
+                                 # for live playback AND any saved figure (overrides
+                                 # zoom_radius_m/padding). Must be set together with ylim.
+  ylim: null                     # explicit NED north range [m]
+
+  # --- Playback --------------------------------------------------------------
+  trail_length: 80               # steps of trajectory history shown; 0 = infinite (full trail)
+  trail_alpha: 0.65
+  realtime_factor: 10.0          # playback speed multiplier: 1.0 = real-time, 2.0 = 2x faster.
+                                  # AIS data (dt=2s) typically wants 500-1000+ to be watchable.
+  save_path: null                # run_simulation.py only: e.g. "output.gif" — null means display
+                                  # live instead of rendering straight to a file (or use --save)
+  fps: 20                        # frames per second when save_path is set
+
+  # --- Panel toggles -----------------------------------------------------
+  debug_viz: false                # per-vessel VO velocity-space panel
+  colregs_graph_viz: true         # COLREGs interaction-graph panel
+  responding_panel: false         # p(r=R)-vs-time side panel (needs use_responding_filter: true
+                                   # in the prediction block)
+  seachart: true                  # AIS-only. true = draw sea-chart map (land/coastline/shoals)
+                                   # from seacharts/*.gdb; false = plain background
+  water_color: null               # AIS-only. null = plain background for open water;
+                                   # e.g. "#dfedf5" = nautical-chart blue tint
+
+  # --- Vessel drawing ----------------------------------------------------
+  vessel:
+    length: 40.0                  # [m] display length (use ~30 for real AIS vessels at
+    width: 12.0                   # [m] display width   multi-km zoom, they'd be invisible at true scale)
+    bow_fraction: 0.25             # fraction of length forming the triangular bow
+    alpha: 0.85                    # fill opacity
+    label_offset: 2.0              # label offset multiplier (x vessel_width, port side)
+    heading_marker: false          # fixed-screen-size triangle at each vessel pointing along
+                                    # heading — needed at AIS zoom levels where the true hull
+                                    # polygon is too small to read; off by default for the
+                                    # basin-scale simulation demos where the hull is visible
+    heading_marker_size: 24.0      # [pt]
+    heading_marker_alpha: 0.9
+
+  # --- Text sizing (paper-readable figures) -------------------------------
+  font_size: 13.0                 # uniform size for all labels/ticks/legends/titles
+  vessel_label_fontsize: 17.0     # V1, V2, ... markers on the main map (larger, for spatial clarity)
+
+  # --- Legend & panel titles -----------------------------------------------
+  legend_loc: corner              # main-map line-style legend: "corner" (boxed, upper-right) |
+                                   # "top" (horizontal bar above the map) | "off"
+  panel_titles: true              # heading above each panel ("Trajectory Plot", "Interaction
+                                   # Graph", "Responding Posterior")
+
+  # --- COLREGs-graph styling ------------------------------------------------
+  cg_inset: false                  # draw the Interaction Graph as a corner inset of the main
+                                    # map instead of its own side-by-side column
+  cg_inset_side: right             # top-left | top-right | bottom-left | bottom-right
+                                    # ("left"/"right" are aliases for the bottom corners)
+  cg_inset_size: 0.36              # inset box width as a fraction of the main map
+  cg_legend: true                  # role-colour legend (Head-on / Crossing / ...) on the graph panel
+  cg_monochrome: "black-grey"      # "off" = colour-coded edges + role labels | "black" |
+                                    # "grey" | "black-grey" (black role labels, grey edges —
+                                    # used for the paper figures)
+
+  # --- Responding-filter visualization --------------------------------------
+  responding_inline: false          # small green->red belief bar next to each target's V-label
+                                     # on the map, showing its current p(responding) (needs a
+                                     # responding history; use_responding_filter: true)
+  responding_plot: false            # save a standalone p(responding)-vs-time plot once playback
+                                     # ends (needs a responding history)
+  responding_plot_window: null      # [t_start, t_end] seconds to crop that plot's x-axis to;
+                                     # null = full run
+  responding_under_graph: false     # run_simulation.py: stack a live p(responding)-vs-time panel
+                                     # directly under the Interaction Graph (needs
+                                     # colregs_graph_viz: true and a responding history)
+  responding_under_graph_ratio: 0.45  # its height relative to the graph above it
+
+  # --- Simulation-plot-only extras (run_simulation.py) ------------------------
+  goal_markers: false               # draw each vessel's goal as a single star marker instead of
+                                     # the full dotted nominal trajectory (less clutter)
+  center_ego_x: false               # shift the auto x-limits so the ego vessel's initial
+                                     # position sits at the horizontal centre of the plot
+
+  # --- Paper-figure frame saving ---------------------------------------------
+  # Press 'S' during playback to save the current frame, or set stop_time_s
+  # (or pass --stop-time) to auto-pause + save once playback reaches that time.
+  frames_dir: null                  # output dir for saved frames (default: outputs/frames)
+  frame_format: pdf                 # pdf | svg | png — pdf/svg are vector; png is rasterized
+  frame_dpi: 300                    # only used when frame_format: png
+  stop_time_s: null                 # [s] sim time (t = step/frame * dt) to auto-pause + save at
+
+  # --- Video recording (viz.video, or --record) -----------------------------
+  video:
+    enabled: false                   # record live playback to outputs/videos/
+    fps: 15                          # frame rate of the saved video (independent of realtime_factor)
+    start_time_s: null               # restrict the RECORDED video to this sim-time window [s]
+    end_time_s: null                 # (t = frame/step * dt). null on either side = unrestricted
+                                      # on that side. Live playback itself is never affected —
+                                      # only which frames get grabbed into the video file.
+
+  # --- Static multi-panel figure (AIS-only, run_AIS.py --multi-panel) -------
+  # N trajectory panels side by side, one per sim time in `times`, instead of
+  # live playback. See scenarios/real/window_098.yaml for a working example.
+  multi_panel:
+    enabled: false
+    times: []                        # sim time [s] per panel, left->right
+    legend_loc: panel                # panel | bottom | panel-bottom
+    legend_ncol: null                # columns in the horizontal legend; null = 1 for "bottom",
+                                      # 2 for "panel-bottom"
+    legend_panel: 0                  # index into `times` of the panel carrying the legend
+    panel_width: 4.0                 # [in] width of each panel (all panels share the y-axis)
+    marker_scale: null               # scale for on-screen-sized elements vs the full-width live
+                                      # map; null = auto (scales with panel_width)
+    cg_inset: null                   # null = inherit the top-level viz.cg_inset
+    cg_inset_side: bottom-right
+    cg_inset_size: 0.30
+    cg_inset_scale: null             # null = auto from marker_scale
+    responding_panel: off             # over | under | off — wide p(r=R)-vs-time panel spanning
+                                       # all columns, with a marker at each panel's capture time
+    responding_panel_ratio: 0.25
+    responding_panel_values: true
+    responding_panel_window: null     # null = falls back to viz.responding_plot_window, else
+                                       # start..last panel time
+    panel_gap: 0.012                  # gap between packed panels (figure fraction; only applied
+                                       # when responding_panel is on)

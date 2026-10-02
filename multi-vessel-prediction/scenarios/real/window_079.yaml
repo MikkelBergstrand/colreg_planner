@@ -1,0 +1,80 @@
+# Real-AIS encounter, window 79.
+#
+# Run:
+#   python scripts/run_AIS.py --config scenarios/real/window_079.yaml            # live playback
+#   python scripts/run_AIS.py --config scenarios/real/window_079.yaml --metrics  # ADE/FDE for this window
+#
+# See scenarios/README.md for what each block below means, and
+# scenarios/viz_reference.yaml for the full list of plotting options (anything
+# not set here is left at its default — see that file for what it would be).
+
+profile: false                 # print a per-operation timing summary on exit (also --profile)
+
+data:
+  pkl_path: "handover/Moss Horten Feb 2026 AIS/processed/ais_04.pkl"
+  window_id: 79
+  start_step: 50               # frame index to start playback from
+  end_step: null                # null = play to the end of the window (overridden by --end)
+  exclude_mmsi: [257846800, 257847600]  # noise vessels not part of the encounter
+                                # (curate via scripts/tools/browse_encounters.py)
+
+prediction:
+  H: 300                       # prediction horizon [steps]
+  pred_every: 1                 # recompute every N frames
+
+  nominal:
+    enabled: true
+    library_path: "handover/nominal_library_jan_26.h5"
+    beta: 100.0                # shape-distance temperature [m] (paper's β, Eq. 1)
+    r: 200.0                   # KDTree search radius [m]
+    max_candidates: 1000       # max candidates before shape-distance scoring
+    heading_cone_deg: 160.0    # pre-filter: drop candidates whose heading deviates > this [deg]
+
+  interaction:
+    enabled: true
+    use_responding_filter: true
+    top_k_hypotheses: 1          # most likely hypotheses drawn live (1 = only the best)
+    reclassify_in_rollout: true  # re-run the COLREGs classifier at every rollout step (paper Sec. V-D); false = fixed graph, faster
+    agent:
+      policy_type: vo_analytic
+      rollout_model: ct_decoupled_ar         # motion model used to roll the VO solution forward
+      filter_rollout_model: ct_decoupled_ar  # model for the responding filter's 1-step scoring rollout
+      tcpa_threshold: 1000.0   # [s] react when TCPA falls below this
+      d_pass: 100.0             # [m] paper's D^i
+      k_psi: 0.1                 # [s^-1] proportional heading control gain (paper's k_ψ)
+      los_lookahead: 1000.0     # [m] LOS guidance lookahead (paper's Δ)
+      continuity_weight: 0.9    # hysteresis weight, paper's λ (Eq. 19)
+
+metrics:                       # ADE/FDE of the predictions vs ground-truth future AIS
+  enabled: false                # also --metrics / --metrics-viz on the CLI
+  live_viz: true                 # run scoring alongside the live view instead of headless
+  start_step: 50                 # first frame to SCORE at (predictor still steps from
+                                  # data.start_step so its filters/hysteresis are warmed up)
+  end_step: 400
+  eval_every: null
+  methods: [interaction, nominal, constant_velocity]
+  horizons_s: [60, 300, 600]     # 1/5/10 min lookahead
+  require_full_horizon: true
+  min_speed: 0.0
+  by_step: true
+  out_dir: outputs/data
+  out_name: null
+
+viz:
+  xlim: [-9000, 5000]            # explicit NED east range [m]
+  ylim: [-5800, 3200]            # explicit NED north range [m]
+  trail_length: 0                # 0 = full trail
+  realtime_factor: 1000.0        # dt=2s AIS data played back fast
+  show_future_traj: true         # overlay the true future AIS track (dotted)
+  legend_loc: top
+  responding_panel: true         # p(r=R) posterior panel (needs use_responding_filter above)
+  font_size: 20                  # paper-readable text
+  vessel_label_fontsize: 24
+  cg_legend: false               # role-colour legend redundant with paper Table I
+
+  vessel:                        # real AIS vessels need a much smaller display size than
+    length: 30.0                  # the simulation demos (scenarios/simulation/)
+    width: 8.0
+    heading_marker: true          # fixed-screen-size heading triangle (off by default; needed
+    heading_marker_size: 24.0     # at AIS zoom levels where the true hull is invisible)
+    heading_marker_alpha: 0.9

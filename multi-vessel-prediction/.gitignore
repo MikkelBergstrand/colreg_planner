@@ -1,0 +1,20 @@
+# Python packaging
+*.egg-info/
+__pycache__/
+*.pyc
+.eggs/
+
+/venv
+/data
+/outputs
+/seacharts
+/src/traffic_graph/
+/handover
+
+# Local-only backups of superseded/one-off scenario configs
+/scenarios/real/archive/
+/scenarios/simulation/archive/
+
+
+# IDE
+.vscode/

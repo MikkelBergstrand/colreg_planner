@@ -1,0 +1,55 @@
+# Simulation: two-vessel head-on encounter. Both vessels hold the HEAD-ON role
+# (Rule 14) and are responsive, so the avoidance burden is shared — each
+# alters course to starboard by a reciprocal (RVO) amount rather than one
+# vessel doing all the work, unlike the give-way/overtaking demos.
+#
+# Run:
+#   python scripts/run_simulation.py --config scenarios/simulation/head_on.yaml
+#
+# See scenarios/README.md for what each block below means, and
+# scenarios/viz_reference.yaml for the full list of plotting options (anything
+# not set here is left at its default).
+
+scenario:
+  dt: 0.5                # timestep [s]
+  t_horizon: 100.0        # simulation duration [s]
+  noise_std_pos: 0.0      # position observation noise [m], 0 = noiseless
+  noise_std_vel: 0.0      # velocity observation noise [m/s]
+  seed: 42
+
+  vessels:
+    ego:
+      speed: 5.0
+      heading: 0.0                    # [deg, NED] — 0 = north
+      sim_model: ct_decoupled_ar
+      policy: vo_analytic
+      tcpa_threshold: 100.0           # [s] react when TCPA < this
+      d_pass: 100.0                   # [m] desired passing distance
+      intent: responsive
+
+    target_1:
+      encounter: head_on
+      range: 400.0
+      lateral_offset_m: 0.0
+      speed: 4.0
+      sim_model: ct_decoupled_ar
+      policy: vo_analytic
+      tcpa_threshold: 100.0
+      d_pass: 100.0
+      intent: responsive               # both vessels responsive -> shared RVO avoidance
+
+prediction:
+  enabled: true
+  use_responding_filter: true
+  horizon: 100.0
+  update_dt: 0.5
+  policy_type: vo_analytic
+  rollout_model: ct_decoupled_ar
+  reclassify_in_rollout: false   # re-run the COLREGs classifier at every rollout step (paper Sec. V-D); false = fixed graph, faster
+  top_k_hypotheses: 1      # draw the top-2 most-likely responsiveness-hypothesis
+                            # trajectory bundles live (needs use_responding_filter above)
+
+viz:
+  trail_length: 0          # 0 = full trail
+  realtime_factor: 100.0    # playback speed multiplier
+  responding_panel: true    # p(r=R) posterior side panel (needs use_responding_filter above)
