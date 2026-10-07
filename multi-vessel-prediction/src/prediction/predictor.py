@@ -16,6 +16,10 @@ Typical usage
         p_responsive = predictor.update(states)
         bundles     = predictor.predict()       # list[(trajectories, weight)]
         best_trajs  = bundles[0][0]             # dict[str, list[VesselState]]
+
+With parallel_workers > 0 the full-horizon hypothesis rollouts run in a pool
+of worker processes (prediction/parallel.py); start_predict() returns while
+they run, so a caller can go on to the next frame and collect later.
 """
 
 from __future__ import annotations
@@ -34,12 +38,14 @@ import numpy as np
 
 from src.colregs_graph.colregs_classifier import ColregsClassifier
 from src.colregs_graph.colregs_graph import ColregsGraph, VesselRole, apply_responsiveness
+from src.prediction.parallel import Pending, RolloutPool, submit_rollout
 from src.prediction.responding_filter import RespondingFilter
 from src.prediction.vo_rollout import (
     VOAgentConfig,
     enumerate_and_rollout,
     make_vo_policy,
     nominal_1step,
+    start_enumerate_and_rollout,
     vo_rollout,
 )
 from src.vessel.state import Intent, VesselState
@@ -69,6 +75,9 @@ class VesselPredictor:
         Vessels whose responsiveness is known rather than estimated, e.g. the
         own ship. They get no responding filter, a fixed p_responsive of 1 or
         0, and are left out of the hypothesis enumeration.
+    parallel_workers : int
+        Worker processes for the full-horizon rollouts; 0 = run them in this
+        process.  Results are identical either way.
     """
 
     def __init__(
@@ -87,6 +96,7 @@ class VesselPredictor:
         interaction_enabled:           bool                            = True,
         reclassify_in_rollout:         bool                            = True,
         known_intents:                 dict[str, Intent] | None        = None,
+        parallel_workers:              int                             = 0,
     ) -> None:
         self._dt               = dt
         self._H                = H
@@ -127,6 +137,10 @@ class VesselPredictor:
         self._last_nominal_trajs : dict[str, list[VesselState]] = {}
 
         self._timing : dict[str, list[float]] | None = None
+
+        self._pool: RolloutPool | None = (
+            RolloutPool(parallel_workers) if parallel_workers > 0 else None
+        )
 
     # ------------------------------------------------------------------
     # Profiling
@@ -378,6 +392,25 @@ class VesselPredictor:
             It is empty when no hypotheses were enumerated (responding filter
             off, interaction disabled, or the fallback path).
         """
+        return self.start_predict_hypotheses(top_k).result()
+
+    def start_predict(self, top_k: int | None = None) -> Pending:
+        """predict(), split in two: everything that updates the predictor's
+        state (classifier, responding-filter preparation) is done when this
+        returns; the full-horizon rollouts may still be running on the
+        worker pool.  .result() on the returned Pending waits for them and
+        gives predict()'s return value.
+
+        The rollouts work on a snapshot, so update() may be called for the
+        next frame before .result().
+        """
+        pending = self.start_predict_hypotheses(top_k)
+        return Pending(lambda: [(trajs, weight) for trajs, _, weight in pending.result()])
+
+    def start_predict_hypotheses(self, top_k: int | None = None) -> Pending:
+        """start_predict() for predict_hypotheses(): .result() gives
+        (trajectories, assignment, weight) bundles.
+        """
         _t = self._timing
         _t0 = time.perf_counter() if _t is not None else 0.0
 
@@ -386,12 +419,12 @@ class VesselPredictor:
 
         if self._current_nom_graph is None:
             if not self._current_states:
-                return []
+                return Pending.done([])
             int_keyed = {self._stable_index[vid]: s for vid, s in self._current_states.items()}
             self._current_nom_graph = self._classifier.update(int_keyed)
 
         if not self._interaction_enabled:
-            return [(trajs, {}, w) for trajs, w in self._nominal_integrate()]
+            return Pending.done([(trajs, {}, w) for trajs, w in self._nominal_integrate()])
 
         moving_states    = self._moving_states()
         vessel_index_map = {vid: self._stable_index[vid] for vid in moving_states}
@@ -400,22 +433,32 @@ class VesselPredictor:
         if _t is not None:
             _t1 = time.perf_counter(); _t["prd.config_build"].append(_t1 - _t0); _t0 = _t1
 
+        # Fallback computed now: by .result() time the current states may
+        # belong to a later frame.
+        fallback = self._fallback()
+
         if not self._use_responding_filter:
-            try:
-                trajs = vo_rollout(
-                    initial_states   = moving_states,
-                    dt               = self._dt,
-                    n_steps          = self._H,
-                    agent_configs    = active_configs,
-                    colregs_graph    = self._current_nom_graph,
-                    vessel_index_map = vessel_index_map,
-                    _timings         = _t,
-                )
+            handle = submit_rollout(
+                self._pool,
+                initial_states   = moving_states,
+                dt               = self._dt,
+                n_steps          = self._H,
+                agent_configs    = active_configs,
+                colregs_graph    = self._current_nom_graph,
+                vessel_index_map = vessel_index_map,
+                _timings         = _t,
+            )
+
+            def collect_single():
+                try:
+                    trajs = handle.result()
+                except ValueError:
+                    return fallback
                 if _t is not None:
-                    _t1 = time.perf_counter(); _t["prd.rollout_total"].append(_t1 - _t0)
+                    _t["prd.rollout_total"].append(time.perf_counter() - _t0)
                 return [(trajs, {}, 1.0)]
-            except ValueError:
-                return self._fallback()
+
+            return Pending(collect_single)
 
         probs = {vid: self._responding_filters[vid].predicted_p_responsive() for vid in moving_states
                  if vid in self._responding_filters}
@@ -463,7 +506,7 @@ class VesselPredictor:
                 _t1 = time.perf_counter(); _t["prd.pred_1step"].append(_t1 - _t0); _t0 = _t1
 
             # Full-horizon rollout for visualization (top_k bundles only).
-            results = enumerate_and_rollout(
+            pending = start_enumerate_and_rollout(
                 initial_states   = moving_states,
                 responding_probs = probs,
                 nom_graph        = self._current_nom_graph,
@@ -473,15 +516,21 @@ class VesselPredictor:
                 vessel_index_map = vessel_index_map,
                 top_k            = top_k,
                 colregs_classifier = self._classifier if self._reclassify_in_rollout else None,
+                pool             = self._pool,
                 _timings         = _t,
             )
-            if _t is not None:
-                _t1 = time.perf_counter(); _t["prd.rollout_total"].append(_t1 - _t0)
-            if not results:
-                return self._fallback()
-            return results
         except ValueError:
-            return self._fallback()
+            return Pending.done(fallback)
+
+        def collect():
+            results = pending.result()
+            if _t is not None:
+                _t["prd.rollout_total"].append(time.perf_counter() - _t0)
+            if not results:
+                return fallback
+            return results
+
+        return Pending(collect)
 
     # ------------------------------------------------------------------
     # Properties / configuration

@@ -7,7 +7,7 @@ Usage
 -----
     python scripts/run_simulation.py
     python scripts/run_simulation.py --config path/to/other_config.yaml
-    python scripts/run_simulation.py --save output.gif
+    python scripts/run_simulation.py --save-gif           # save animation to outputs/<config_stem>.gif
     python scripts/run_simulation.py --config scenarios/simulation/multi_vessel.yaml --stop-time 40
     python scripts/run_simulation.py --record             # save live playback to outputs/videos/
 
@@ -21,7 +21,7 @@ Video recording (viz.video in config, or --record)
                                         always plays the full run regardless — this only
                                         trims which frames get grabbed into the video.
 
-  Only applies to live playback (not the --save/viz.save_path gif export,
+  Only applies to live playback (not the --save-gif/viz.save_path gif export,
   which renders offline via FuncAnimation instead of the live loop). Frames
   are grabbed only while playback is running (not while paused), and the
   video is finalized once end_time_s is reached, or on quit/window
@@ -75,6 +75,7 @@ from src.planner_api.manoeuvre_search import (
 )
 from src.colregs_graph.colregs_graph import apply_responsiveness
 from src.colregs_graph.colregs_classifier import ColregsClassifier
+from src.prediction.parallel import RolloutPool, resolve_workers
 from src.prediction.responding_filter import RespondingFilter
 from src.prediction.vo_rollout import (
     vo_rollout, VOAgentConfig, enumerate_and_rollout, make_vo_policy, nominal_1step,
@@ -291,6 +292,7 @@ def _make_pred_fn(
     reclassify_in_rollout: bool                                 = True,
     fixed_probs:          Optional[dict[str, float]]            = None,
     fixed_plans:          Optional[Callable[[int], dict[str, np.ndarray]]] = None,
+    pool:                 Optional[RolloutPool]                 = None,
 ) -> Callable[[dict[str, VesselState], int], dict[str, list[VesselState]]]:
     """Return a callable that runs a VO rollout from any snapshot of states.
 
@@ -311,6 +313,9 @@ def _make_pred_fn(
     reclassify_in_rollout : re-run the prediction classifier at every step of
         each hypothesis rollout (paper Sec. V-D).  False → each hypothesis graph
         is held fixed for the whole horizon (faster).
+
+    pool : optional RolloutPool; the top-K hypothesis rollouts then run in
+        parallel worker processes (identical results).
 
     force_all_responsive : ignore any responding filter and roll out with every
         vessel assumed responsive (no STAND_ON override) — the "assume everyone
@@ -377,6 +382,7 @@ def _make_pred_fn(
                     top_k            = max(1, top_k),
                     colregs_classifier = pred_classifier if reclassify_in_rollout else None,
                     fixed_plan_ids   = set(plans) or None,
+                    pool             = pool,
                 )
                 results = ([(b[0], b[2]) for b in bundles] if bundles
                            else [(_fallback, None)])
@@ -814,7 +820,7 @@ def main() -> None:
         "--config", type=Path,
         default=Path(__file__).resolve().parents[1] / "scenarios/simulation/head_on.yaml",
     )
-    parser.add_argument("--save", action="store_true",
+    parser.add_argument("--save-gif", "--save", dest="save_gif", action="store_true",
                         help="Save animation to outputs/<scenario_name>.gif")
     parser.add_argument("--record", action="store_true",
                         help="Record live playback to outputs/videos/ "
@@ -831,7 +837,7 @@ def main() -> None:
     config, vessel_cfgs, vc, pred_cfg = load_config(args.config)
     if args.ego_policy:
         vessel_cfgs.setdefault("ego", {})["policy"] = args.ego_policy
-    if args.save:
+    if args.save_gif:
         out_dir = Path(__file__).resolve().parents[1] / "outputs"
         out_dir.mkdir(exist_ok=True)
         vc.save_path = str(out_dir / f"{args.config.stem}.gif")
@@ -872,6 +878,13 @@ def main() -> None:
         print(f"VO prediction enabled  "
               f"(horizon={pred_cfg.horizon} s, {H} steps, "
               f"update every {pred_cfg.update_dt} s / {pred_every} frames)")
+        # At most min(top_k, 2^N) hypothesis rollouts run at the same time.
+        n_workers = resolve_workers(
+            pred_cfg.parallel_workers,
+            max_parallel=min(pred_cfg.top_k_hypotheses, 2 ** len(config.vessels)),
+        )
+        if n_workers > 0:
+            print(f"  Parallel rollouts : {n_workers} worker processes")
         pred_fn = _make_pred_fn(
             config.vessels, vessel_cfgs, config.dt, H, config,
             policy_type=pred_cfg.policy_type,
@@ -889,6 +902,7 @@ def main() -> None:
                                 for vid, pol in plan_log.items()})
                 if plan_log else None
             ),
+            pool=RolloutPool(n_workers) if n_workers > 0 else None,
         )
         if pred_cfg.top_k_hypotheses > 1:
             print(f"  Top-K hypotheses : drawing up to {pred_cfg.top_k_hypotheses} "

@@ -22,6 +22,7 @@ Usage
     python scripts/run_AIS.py --speed 200              # override realtime_factor
     python scripts/run_AIS.py --start 50 --end 250     # play/plot only frames 50..250
     python scripts/run_AIS.py --record                 # save playback to outputs/videos/
+    python scripts/run_AIS.py --save-gif               # save playback to outputs/<config_stem>.gif
 
 Video recording (viz.video in config, or --record)
 ----------------------------------------------------
@@ -34,6 +35,12 @@ Video recording (viz.video in config, or --record)
                                           full data.start_step..end_step range regardless —
                                           this only trims which frames get grabbed into the
                                           video.
+
+  --save-gif (or viz.save_path in config) records the same live playback to a
+  gif instead (outputs/<config_stem>.gif, at viz.fps) — it takes the place of the
+  mp4 if both are requested, and honours the same start_time_s/end_time_s window.
+  Unlike run_simulation.py, predictions are computed during playback, so the
+  gif is grabbed from the live loop rather than rendered offline.
 
   Frames are grabbed only while playback is running (not while paused), and
   the video is finalized once end_time_s is reached, or on quit/window
@@ -110,6 +117,7 @@ from src.vessel.state import VesselState
 from src.visualization.live_viz import VesselMeta, SimInfo, VizConfig, LiveVisualizer, save_responding_plot
 from src.visualization.multi_panel import PanelSnapshot, save_multi_panel_trajectory_plot
 from src.prediction.predictor import VesselPredictor
+from src.prediction.parallel import resolve_workers
 from src.prediction.vo_rollout import VOAgentConfig
 from src.ais.windows import traj_limits, window_to_frames
 
@@ -158,10 +166,15 @@ def _apply_vessel_exclusions(w: dict, exclude_mmsi: list) -> dict:
 
 def _build_predictor(
     cfg: dict, dt: float, ref_lat: float, ref_lon: float,
+    *, frame_parallel: bool = False,
 ) -> tuple[VesselPredictor | None, object | None, bool, bool, bool]:
     """Construct the VesselPredictor (+ nominal retriever) from config. Shared
     by the live playback path (`play`) and the static multi-panel path
     (`multi_panel_run`).
+
+    frame_parallel : the caller runs the rollouts of many frames at the same
+        time (metrics_run), so parallel_workers: auto may use all CPU cores
+        instead of one worker per top-K hypothesis.
 
     Returns
     -------
@@ -202,14 +215,22 @@ def _build_predictor(
     # 1-step scoring rollout.  Unset → same as agent.rollout_model.
     _agent_cfg_dict = interaction_cfg.get("agent", {})
     responding_rollout_model = _agent_cfg_dict.get("filter_rollout_model")
+    top_k     = interaction_cfg.get("top_k_hypotheses", 1)
+    n_workers = resolve_workers(
+        interaction_cfg.get("parallel_workers", "auto"),
+        max_parallel=None if frame_parallel else top_k,
+    )
+    if n_workers > 0:
+        print(f"  Parallel rollouts: {n_workers} worker processes")
     predictor = VesselPredictor(
         dt                        = dt,
         H                         = pred_cfg.get("H", 30),
         default_agent_config      = agent_cfg,
         use_responding_filter            = use_responding_filter,
         responding_rollout_model  = responding_rollout_model,
-        default_top_k             = interaction_cfg.get("top_k_hypotheses", 1),
+        default_top_k             = top_k,
         reclassify_in_rollout     = bool(interaction_cfg.get("reclassify_in_rollout", True)),
+        parallel_workers          = n_workers,
         nominal_retriever         = nominal_retriever,
         interaction_enabled       = interaction_enabled,
     )
@@ -431,11 +452,22 @@ def _export_trajectories(
 # ---------------------------------------------------------------------------
 
 def _start_video_recording(viz: LiveVisualizer, w: dict, vc: VizConfig) -> Path | None:
-    """Start recording live playback to outputs/videos/, if enabled in config.
+    """Start recording live playback — to vc.save_path as a gif if set (--save-gif),
+    otherwise to an mp4 in outputs/videos/ if viz.video.enabled.
 
     Returns the output path on success, or None if recording is disabled or
     could not be started (e.g. ffmpeg unavailable) — playback continues either way.
     """
+    if vc.save_path:
+        path = Path(vc.save_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            viz.start_recording(str(path), fps=vc.fps)
+        except Exception as exc:
+            print(f"  Warning: could not start gif recording: {exc}")
+            return None
+        print(f"  Recording gif -> {path}  (fps={vc.fps})")
+        return path
     if not vc.video_enabled:
         return None
     videos_dir = _ROOT / "outputs" / "videos"
@@ -747,7 +779,8 @@ def play(
                         )
                     t0 = _tick("metrics_score", t0)
 
-                if vc.video_enabled and not video_active and not video_done and k >= video_start_step:
+                if (vc.video_enabled or vc.save_path) and not video_active and not video_done \
+                        and k >= video_start_step:
                     video_path   = _start_video_recording(viz, w, vc)
                     video_active = video_path is not None
 
@@ -1477,6 +1510,12 @@ def metrics_run(
     The predictor is stepped forward frame-by-frame from ``start_step`` (so its
     responding filter / hysteresis state is consistent with a live run); the
     heavier predict()/predict_nominal() calls run only at the scored frames.
+
+    The full-horizon rollouts of a frame do not feed back into the predictor,
+    so with ``prediction.interaction.parallel_workers`` > 0 (or "auto": all
+    CPU cores but one) they are started
+    (start_predict) and the loop moves on; all frames are scored at the end,
+    in frame order, so the output is the same as a serial run.
     """
     frames = window_to_frames(w)
     if len(frames) < 3:
@@ -1520,7 +1559,7 @@ def metrics_run(
     predictor = None
     if plan["need_predictor"]:
         (predictor, _nom_retr, interaction_enabled,
-         _ur) = _build_predictor(cfg, dt, ref_lat, ref_lon)
+         _ur) = _build_predictor(cfg, dt, ref_lat, ref_lon, frame_parallel=True)
         if predictor is None:
             print("  Warning: could not build a predictor — 'interaction'/'nominal' "
                   "methods will be skipped. Check prediction.* in the config.")
@@ -1532,6 +1571,10 @@ def metrics_run(
     per_sample: list[dict] = []
     step_sum = {mth: np.zeros(plan["max_h_steps"]) for mth in methods}
     step_cnt = {mth: np.zeros(plan["max_h_steps"]) for mth in methods}
+
+    # Scored frames waiting for their interaction rollouts:
+    # (k, states, preds_by_method, pending interaction bundles or None, burden_ids)
+    started: list[tuple] = []
 
     for k in range(plan["loop_start"], plan["score_end"] + 1):
         states = {
@@ -1547,19 +1590,29 @@ def metrics_run(
             continue
 
         preds_by_method: dict[str, dict[str, list[VesselState]]] = {}
+        pending = None
         if predictor is not None and plan["need_predictor"]:
             nominal_pred = predictor.predict_nominal()   # also primes predict()
             if "nominal" in methods:
                 preds_by_method["nominal"] = nominal_pred
             if "interaction" in methods:
-                bundles = predictor.predict()
-                preds_by_method["interaction"] = bundles[0][0] if bundles else {}
+                pending = predictor.start_predict()
         if "constant_velocity" in methods:
             preds_by_method["constant_velocity"] = {
                 vid: _cv_rollout(st, plan["max_h_steps"], dt) for vid, st in states.items()
             }
         burden_ids = predictor.burden_ids if predictor is not None else None
+        started.append((k, states, preds_by_method, pending, burden_ids))
 
+    for k, states, preds_by_method, pending, burden_ids in started:
+        if pending is not None:
+            bundles = pending.result()
+            # Keep the method order of a serial run (nominal, interaction, cv).
+            preds_by_method = {
+                **{m: p for m, p in preds_by_method.items() if m != "constant_velocity"},
+                "interaction": bundles[0][0] if bundles else {},
+                **{m: p for m, p in preds_by_method.items() if m == "constant_velocity"},
+            }
         _score_frame_metrics(k, dt, states, preds_by_method, frames, vid_to_mmsi,
                               plan, step_sum, step_cnt, per_sample, w["window_id"],
                               burden_ids=burden_ids)
@@ -1597,6 +1650,8 @@ def main() -> None:
     parser.add_argument("--record", action="store_true",
                         help="Record playback to outputs/videos/ "
                              "(overrides viz.video.enabled in config)")
+    parser.add_argument("--save-gif", "--save", dest="save_gif", action="store_true",
+                        help="Save playback as a gif to outputs/<config_stem>.gif")
     parser.add_argument("--stop-time", type=float, default=None,
                         help="Simulation time [s] at which to auto-pause and save "
                              "the current frame (format via viz.frame_format; overrides "
@@ -1634,6 +1689,8 @@ def main() -> None:
         cfg.setdefault("viz", {})["realtime_factor"] = args.speed
     if args.record:
         cfg.setdefault("viz", {}).setdefault("video", {})["enabled"] = True
+    if args.save_gif:
+        cfg.setdefault("viz", {})["save_path"] = str(_ROOT / "outputs" / f"{args.config.stem}.gif")
 
     start_step = args.start if args.start is not None else cfg["data"].get("start_step", 0)
     end_step   = args.end   if args.end   is not None else cfg["data"].get("end_step")

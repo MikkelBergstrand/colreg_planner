@@ -231,6 +231,17 @@ for states in stream:                      # dict: vessel id -> VesselState (NED
     trajectories = predictor.predict()[0][0]   # most likely hypothesis
 ```
 
+The full-horizon rollouts can run in parallel worker processes
+(`src/prediction/parallel.py`), with identical results:
+`prediction.interaction.parallel_workers: N` in the real-data configs,
+`prediction.parallel_workers: N` in the simulation configs, or
+`VesselPredictor(..., parallel_workers=N)`. Live playback gains only when
+`top_k_hypotheses > 1` (one worker per hypothesis); `--metrics` also runs the
+rollouts of different frames in parallel, so it gains even with
+`top_k_hypotheses: 1`. `parallel_workers: auto` picks this for you: one worker
+per hypothesis live, all CPU cores but one for `--metrics`; it is the default
+in both config types. Use 0 (serial) when debugging the rollout.
+
 ## Planner API
 
 `src/planner_api` wraps the predictor for use as an information source inside

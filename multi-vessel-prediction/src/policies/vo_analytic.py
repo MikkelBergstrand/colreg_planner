@@ -64,7 +64,6 @@ from src.colregs_graph.colregs_graph import VesselRole, ColregsGraph
 from src.policies.debug_types import VODebugFrame, VOConeDebugData, StarboardConstraintDebugData
 
 from .vo_common import (
-    VOCone,
     RoleConfig,
     RolePassDistances,
     role_config,
@@ -74,58 +73,89 @@ from .vo_common import (
 # ---------------------------------------------------------------------------
 # Geometric helpers
 # ---------------------------------------------------------------------------
+# All 2-D vectors in the solver are plain (n, e) float tuples: the candidate
+# sets are small (tens of points), where numpy's per-call overhead costs far
+# more than the arithmetic.
+#
 # Boundaries are "primitives" (p, d, ray): the line p + t*d (unit d), or the
 # ray t >= 0 when ray is True.  Starboard constraints are (ru, ref): unit
 # bearing to the obstacle and the reference velocity of the obstacle.
 
-def _prim_circle(p: np.ndarray, d: np.ndarray, ray: bool, radius: float) -> list[np.ndarray]:
+Vec = tuple[float, float]
+
+_ORIGIN: Vec = (0.0, 0.0)
+
+
+class _Cone:
+    """VO cone (apex, unit axis, half-angle) with its two legs as unit
+    vectors: the left (port) leg is the axis rotated by -half_angle, the
+    right (starboard) leg by +half_angle (NED, clockwise positive)."""
+
+    __slots__ = ("apex", "axis", "half_angle", "cos_half_angle", "left_leg", "right_leg")
+
+    def __init__(self, apex: Vec, axis: Vec, half_angle: float) -> None:
+        self.apex       = apex
+        self.axis       = axis
+        self.half_angle = half_angle
+        c, s = math.cos(half_angle), math.sin(half_angle)
+        ax, ae = axis
+        self.cos_half_angle = c
+        self.left_leg  = (c * ax + s * ae, -s * ax + c * ae)
+        self.right_leg = (c * ax - s * ae,  s * ax + c * ae)
+
+
+def _prim_circle(p: Vec, d: Vec, ray: bool, radius: float) -> list[Vec]:
     """Points where line/ray p + t*d (unit d) meets the circle |v| = radius."""
-    b    = float(p[0] * d[0] + p[1] * d[1])
-    disc = b * b - (float(p[0] * p[0] + p[1] * p[1]) - radius * radius)
+    b    = p[0] * d[0] + p[1] * d[1]
+    disc = b * b - ((p[0] * p[0] + p[1] * p[1]) - radius * radius)
     if disc < 0.0:
         return []
     sq = math.sqrt(disc)
-    return [p + t * d for t in (-b - sq, -b + sq) if not (ray and t < 0.0)]
+    return [(p[0] + t * d[0], p[1] + t * d[1])
+            for t in (-b - sq, -b + sq) if not (ray and t < 0.0)]
 
 
-def _budget_rays(u: np.ndarray, budget: float) -> list[tuple[np.ndarray, np.ndarray, bool]]:
+def _budget_rays(u: Vec, budget: float) -> list[tuple[Vec, Vec, bool]]:
     """The two course-budget edges as rays from the origin (none if >= 180 deg)."""
     if budget >= math.pi - 1e-9:
         return []
     rays = []
     for sgn in (-1.0, 1.0):
         ca, sa = math.cos(sgn * budget), math.sin(sgn * budget)
-        rays.append((np.zeros(2), np.array([ca * u[0] - sa * u[1], sa * u[0] + ca * u[1]]), True))
+        rays.append((_ORIGIN, (ca * u[0] - sa * u[1], sa * u[0] + ca * u[1]), True))
     return rays
 
 
 def _boundary_prims(cones, sb_units):
     """Boundary primitives of the cones (both legs) and starboard constraints."""
-    prims: list[tuple[np.ndarray, np.ndarray, bool]] = []
+    prims: list[tuple[Vec, Vec, bool]] = []
     for cone in cones:
         prims.append((cone.apex, cone.left_leg,  True))
         prims.append((cone.apex, cone.right_leg, True))
     for ru, ref in sb_units:
-        prims.append((ref, ru, False))                         # side boundary (cross = 0)
-        prims.append((ref, np.array([-ru[1], ru[0]]), False))  # converging gate (range rate 0)
+        prims.append((ref, ru, False))                  # side boundary (cross = 0)
+        prims.append((ref, (-ru[1], ru[0]), False))     # converging gate (range rate 0)
     return prims
 
 
-def _feasible_mask(cands, cones, sb_units, tol, epsilon):
-    """True where a candidate velocity is outside every cone and satisfies
-    every starboard constraint (not converging on the port side)."""
-    ok = np.ones(len(cands), dtype=bool)
+def _admissible(v: Vec, cones, sb_units, u: Vec, min_dot: float, tol: float, epsilon: float) -> bool:
+    """True if velocity v is within the course budget (v . u >= min_dot),
+    outside every cone and satisfies every starboard constraint (not
+    converging on the port side)."""
+    vn, ve = v
+    if vn * u[0] + ve * u[1] < min_dot:
+        return False
     for cone in cones:
-        rel    = cands - cone.apex
-        dot_ax = rel @ cone.axis
+        rn, re = vn - cone.apex[0], ve - cone.apex[1]
+        dot_ax = rn * cone.axis[0] + re * cone.axis[1]
         thr_sq = (cone.cos_half_angle + epsilon) ** 2
-        ok    &= ~((dot_ax > 0.0) & (dot_ax * dot_ax > thr_sq * (rel * rel).sum(axis=1)))
+        if dot_ax > 0.0 and dot_ax * dot_ax > thr_sq * (rn * rn + re * re):
+            return False
     for ru, ref in sb_units:
-        rv    = cands - ref
-        conv  = rv @ ru > tol
-        cross = ru[0] * rv[:, 1] - ru[1] * rv[:, 0]
-        ok   &= ~(conv & (cross < -tol))
-    return ok
+        rn, re = vn - ref[0], ve - ref[1]
+        if rn * ru[0] + re * ru[1] > tol and ru[0] * re - ru[1] * rn < -tol:
+            return False
+    return True
 
 
 def _ring_pick(v_pref, v_prev, lam, R, u, budget, cones, sb_units, epsilon):
@@ -136,33 +166,37 @@ def _ring_pick(v_pref, v_prev, lam, R, u, budget, cones, sb_units, epsilon):
     boundary primitive meets the ring -- so only those candidates are
     evaluated.  None if no heading is feasible.
     """
-    tol   = 1e-7 * max(1.0, R)
-    prims = _boundary_prims(cones, sb_units) + _budget_rays(u, budget)
-    ring: list[np.ndarray] = [np.asarray(v_pref, dtype=float)]
+    tol     = 1e-7 * max(1.0, R)
+    min_dot = math.cos(budget) * R - tol
+    prims   = _boundary_prims(cones, sb_units) + _budget_rays(u, budget)
+    ring: list[Vec] = [v_pref]
     if v_prev is not None:
-        ring.append(np.asarray(v_prev, dtype=float) * (R / math.hypot(float(v_prev[0]), float(v_prev[1]))))
+        k = R / math.hypot(v_prev[0], v_prev[1])
+        ring.append((v_prev[0] * k, v_prev[1] * k))
     for p, d, ray in prims:
         ring.extend(_prim_circle(p, d, ray, R))
-    cands = np.array(ring)
-    ok  = _feasible_mask(cands, cones, sb_units, tol, epsilon)
-    ok &= (cands @ u) >= math.cos(budget) * R - tol
-    if not ok.any():
-        return None
-    fm  = cands[ok]
-    ang = np.arctan2(fm[:, 1], fm[:, 0])
-    pa  = math.atan2(float(v_pref[1]), float(v_pref[0]))
-    cost = np.abs(np.arctan2(np.sin(ang - pa), np.cos(ang - pa)))
-    if v_prev is not None and lam > 0.0:
-        qa    = math.atan2(float(v_prev[1]), float(v_prev[0]))
-        cost += lam * np.abs(np.arctan2(np.sin(ang - qa), np.cos(ang - qa)))
-    return fm[np.argmin(cost)].copy()
+
+    use_prev = v_prev is not None and lam > 0.0
+    pa = math.atan2(v_pref[1], v_pref[0])
+    qa = math.atan2(v_prev[1], v_prev[0]) if use_prev else 0.0
+    best, best_cost = None, math.inf
+    for v in ring:
+        if not _admissible(v, cones, sb_units, u, min_dot, tol, epsilon):
+            continue
+        ang  = math.atan2(v[1], v[0])
+        cost = abs(math.atan2(math.sin(ang - pa), math.cos(ang - pa)))
+        if use_prev:
+            cost += lam * abs(math.atan2(math.sin(ang - qa), math.cos(ang - qa)))
+        if cost < best_cost:
+            best, best_cost = v, cost
+    return best
 
 
 # ---------------------------------------------------------------------------
 # Cone shift (conflict case)
 # ---------------------------------------------------------------------------
 
-def _cone_edge_pieces(cone: VOCone) -> list[tuple[np.ndarray, float]]:
+def _cone_edge_pieces(cone: _Cone) -> list[tuple[Vec, float]]:
     """Inward unit normals n and offsets c = n . apex of the cone's edges.
 
     The cone (half-angle <= 90 deg) is the intersection of the half-planes
@@ -170,24 +204,24 @@ def _cone_edge_pieces(cone: VOCone) -> list[tuple[np.ndarray, float]]:
     max(0, min_k (n_k . v - c_k)).  A half-plane (half-angle 90 deg) has a
     single edge.
     """
-    pieces: list[tuple[np.ndarray, float]] = []
+    pieces: list[tuple[Vec, float]] = []
     for leg in (cone.left_leg, cone.right_leg):
-        n = np.array([-leg[1], leg[0]])
-        if float(n @ cone.axis) < 0.0:
-            n = -n
-        if pieces and float(n @ pieces[0][0]) > 1.0 - 1e-12:
+        n = (-leg[1], leg[0])
+        if n[0] * cone.axis[0] + n[1] * cone.axis[1] < 0.0:
+            n = (-n[0], -n[1])
+        if pieces and n[0] * pieces[0][0][0] + n[1] * pieces[0][0][1] > 1.0 - 1e-12:
             continue                                   # half-plane: both legs share one edge
-        pieces.append((n, float(n @ cone.apex)))
+        pieces.append((n, n[0] * cone.apex[0] + n[1] * cone.apex[1]))
     return pieces
 
 
-def _shift_cone(cone: VOCone, delta: float) -> VOCone:
+def _shift_cone(cone: _Cone, delta: float) -> _Cone:
     """The cone with both edges pulled inward by delta [m/s] (apex moved
     delta / sin(half-angle) along its axis): it forbids only velocities more
     than delta inside the original cone."""
-    s = math.sin(cone.half_angle)
-    return VOCone(apex=cone.apex + (delta / max(s, 1e-9)) * cone.axis,
-                  axis=cone.axis, half_angle=cone.half_angle)
+    k = delta / max(math.sin(cone.half_angle), 1e-9)
+    return _Cone(apex=(cone.apex[0] + k * cone.axis[0], cone.apex[1] + k * cone.axis[1]),
+                 axis=cone.axis, half_angle=cone.half_angle)
 
 
 def _min_shift(R, u, budget, cones, sb_units, epsilon):
@@ -209,9 +243,9 @@ def _min_shift(R, u, budget, cones, sb_units, epsilon):
     thetas: list[float] = []
     # (1) arc ends: starboard boundaries and budget edges meeting the ring
     for p, d, ray in _boundary_prims([], sb_units) + _budget_rays(u, budget):
-        thetas.extend(math.atan2(float(q[1]), float(q[0])) for q in _prim_circle(p, d, ray, R))
+        thetas.extend(math.atan2(q[1], q[0]) for q in _prim_circle(p, d, ray, R))
     # (2) bottoms of the pieces
-    phis = [math.atan2(float(n[1]), float(n[0])) for n, _ in flat]
+    phis = [math.atan2(n[1], n[0]) for n, _ in flat]
     thetas.extend(ph + math.pi for ph in phis)
     # (3) pairwise crossings (equal amplitude -> one asin each)
     for i in range(len(flat)):
@@ -225,29 +259,28 @@ def _min_shift(R, u, budget, cones, sb_units, epsilon):
             mid = 0.5 * (phis[i] + phis[j])
             a = math.asin(rhs)
             thetas.extend((mid + a, mid + math.pi - a))
-    if not thetas:
-        return None
 
-    th    = np.array(thetas)
-    cands = R * np.column_stack((np.cos(th), np.sin(th)))
-    ok  = _feasible_mask(cands, [], sb_units, tol, epsilon)
-    ok &= (cands @ u) >= math.cos(budget) * R - tol
-    if not ok.any():
-        return None
-    fc = cands[ok]
-    g  = np.zeros(len(fc))
-    for cp in cone_pieces:
-        g = np.maximum(g, np.min(np.stack([fc @ n - c for n, c in cp]), axis=0))
-    return float(g.min())
+    min_dot = math.cos(budget) * R - tol
+    best: float | None = None
+    for th in thetas:
+        v = (R * math.cos(th), R * math.sin(th))
+        if not _admissible(v, [], sb_units, u, min_dot, tol, epsilon):
+            continue
+        g = 0.0
+        for cp in cone_pieces:
+            g = max(g, min(v[0] * n[0] + v[1] * n[1] - c for n, c in cp))
+        if best is None or g < best:
+            best = g
+    return best
 
 
-def _min_shift_bisect(pick, cones: list[VOCone], R: float, iters: int):
+def _min_shift_bisect(pick, cones: list[_Cone], R: float, iters: int):
     """Smallest shift for which pick(shifted cones) succeeds, by bisection --
     numerical safety only, for exact ties at the closed-form delta*.
     Returns (v, delta), or None."""
     if not cones:
         return None
-    hi = R + max(math.hypot(float(cn.apex[0]), float(cn.apex[1])) for cn in cones) + 1e-3
+    hi = R + max(math.hypot(cn.apex[0], cn.apex[1]) for cn in cones) + 1e-3
     v_hi = pick([_shift_cone(cn, hi) for cn in cones])
     if v_hi is None:
         return None
@@ -267,13 +300,13 @@ def _min_shift_bisect(pick, cones: list[VOCone], R: float, iters: int):
 # ---------------------------------------------------------------------------
 
 def achievable_pass_distance(
-    apex:     np.ndarray,
-    axis:     np.ndarray,
+    apex:     Vec,
+    axis:     Vec,
     dist:     float,
     R:        float,
-    u:        np.ndarray,
+    u:        Vec,
     budget:   float,
-    sb_unit:  tuple[np.ndarray, np.ndarray] | None = None,
+    sb_unit:  tuple[Vec, Vec] | None = None,
     epsilon:  float = 1e-6,
 ) -> float | None:
     """Largest passing distance D* to one obstacle reachable on the speed ring.
@@ -290,37 +323,40 @@ def achievable_pass_distance(
     """
     tol  = 1e-7 * max(1.0, R)
     sbs  = [sb_unit] if sb_unit is not None else []
-    pts: list[np.ndarray] = [R * d for _, d, _ in _budget_rays(u, budget)]
-    na = math.hypot(float(apex[0]), float(apex[1]))
+    pts: list[Vec] = [(R * d[0], R * d[1]) for _, d, _ in _budget_rays(u, budget)]
+    na = math.hypot(apex[0], apex[1])
     if na > R:
-        base, half = math.atan2(float(apex[1]), float(apex[0])), math.acos(R / na)
-        pts.extend(R * np.array([math.cos(base + s * half), math.sin(base + s * half)]) for s in (-1.0, 1.0))
-    pts.extend(_prim_circle(apex, np.array([-axis[1], axis[0]]), False, R))
+        base, half = math.atan2(apex[1], apex[0]), math.acos(R / na)
+        pts.extend((R * math.cos(base + s * half), R * math.sin(base + s * half)) for s in (-1.0, 1.0))
+    pts.extend(_prim_circle(apex, (-axis[1], axis[0]), False, R))
     for p, d, ray in _boundary_prims([], sbs):
         pts.extend(_prim_circle(p, d, ray, R))
-    if not pts:
+
+    # cos(phi) at each admissible candidate; D* follows from the smallest.
+    min_dot = math.cos(budget) * R - tol
+    c: float | None = None
+    for v in pts:
+        if not _admissible(v, [], sbs, u, min_dot, tol, epsilon):
+            continue
+        rn, re = v[0] - apex[0], v[1] - apex[1]
+        nrm  = math.sqrt(rn * rn + re * re)
+        cosp = (rn * axis[0] + re * axis[1]) / nrm if nrm > 1e-9 else 0.0
+        if c is None or cosp < c:
+            c = cosp
+    if c is None:
         return None
-    cands = np.array(pts)
-    ok  = _feasible_mask(cands, [], sbs, tol, epsilon)
-    ok &= (cands @ u) >= math.cos(budget) * R - tol
-    if not ok.any():
-        return None
-    rel  = cands[ok] - apex
-    nrm  = np.sqrt((rel * rel).sum(axis=1))
-    cosp = np.where(nrm > 1e-9, (rel @ axis) / np.maximum(nrm, 1e-9), 0.0)
-    c    = float(cosp.min())
     if c <= 0.0:
         return dist
     return dist * math.sqrt(max(0.0, 1.0 - c * c))
 
 
 def solve_vo_achievable(
-    v_pref:            np.ndarray,
-    obstacles:         list[tuple[np.ndarray, np.ndarray, float, float, tuple | None]],
-    nominal_unit:      np.ndarray,
+    v_pref:            Vec,
+    obstacles:         list[tuple[Vec, Vec, float, float, tuple | None]],
+    nominal_unit:      Vec,
     course_budget:     float,
     achievable_ratio:  float,
-    v_prev:            np.ndarray | None = None,
+    v_prev:            Vec | None = None,
     continuity_weight: float = 0.0,
     epsilon:           float = 1e-6,
     bisect_iters:      int   = 20,
@@ -329,7 +365,7 @@ def solve_vo_achievable(
     u = nominal_unit, alpha = achievable_ratio.
 
     obstacles: (apex, unit axis, dist, D_j, starboard unit (axis, ref) or None)
-    per obstacle.
+    per obstacle.  Vectors may be (n, e) tuples or length-2 arrays.
 
       1. Normal case.  D*_j = best passing distance to j alone on the ring
          within the course budget (and j's starboard constraint),
@@ -352,32 +388,37 @@ def solve_vo_achievable(
 
     Returns (v, radii, delta, case) -- delta = shift used (0 in case 1).
     """
-    R = math.hypot(float(v_pref[0]), float(v_pref[1]))
-    u = np.asarray(nominal_unit, dtype=float)
+    vp = (float(v_pref[0]), float(v_pref[1]))
+    R  = math.hypot(vp[0], vp[1])
+    u  = (float(nominal_unit[0]), float(nominal_unit[1]))
     if R < 1e-9 or not obstacles:
-        return np.asarray(v_pref, dtype=float).copy(), [], 0.0, 1
+        return np.array(vp), [], 0.0, 1
     has_prev = v_prev is not None and float(v_prev[0] ** 2 + v_prev[1] ** 2) > 1e-18
-    prev = v_prev if has_prev else None
+    prev = (float(v_prev[0]), float(v_prev[1])) if has_prev else None
     lam  = continuity_weight
 
-    sb_units: list[tuple[np.ndarray, np.ndarray]] = []
-    cones:    list[VOCone] = []
-    radii:    list[float]  = []
+    sb_units: list[tuple[Vec, Vec]] = []
+    cones:    list[_Cone] = []
+    radii:    list[float] = []
     for apex, axis, dist, D, sb in obstacles:
+        apex = (float(apex[0]), float(apex[1]))
+        axis = (float(axis[0]), float(axis[1]))
+        if sb is not None:
+            sb = ((float(sb[0][0]), float(sb[0][1])), (float(sb[1][0]), float(sb[1][1])))
         ds = achievable_pass_distance(apex, axis, dist, R, u, course_budget, sb, epsilon)
         r  = D if ds is None else min(D, achievable_ratio * ds)
-        cones.append(VOCone(apex=apex, axis=axis, half_angle=math.asin(min(r / dist, 1.0))))
+        cones.append(_Cone(apex=apex, axis=axis, half_angle=math.asin(min(r / dist, 1.0))))
         radii.append(r)
         if sb is not None:
             sb_units.append(sb)
 
     def pick(cs):
-        return _ring_pick(v_pref, prev, lam, R, u, course_budget, cs, sb_units, epsilon)
+        return _ring_pick(vp, prev, lam, R, u, course_budget, cs, sb_units, epsilon)
 
     # --- 1. Normal case ----------------------------------------------------
     v = pick(cones)
     if v is not None:
-        return v, radii, 0.0, 1
+        return np.array(v), radii, 0.0, 1
 
     # --- 2. Conflict: shift all cones by the same amount --------------------
     delta = _min_shift(R, u, course_budget, cones, sb_units, epsilon)
@@ -385,14 +426,15 @@ def solve_vo_achievable(
         shift = max(delta, 0.0) / achievable_ratio + 1e-9 * max(1.0, R)
         v = pick([_shift_cone(cn, shift) for cn in cones])
         if v is not None:
-            return v, radii, shift, 2
+            return np.array(v), radii, shift, 2
         res = _min_shift_bisect(pick, cones, R, bisect_iters)
         if res is not None:
-            return res[0], radii, res[1], 2
+            return np.array(res[0]), radii, res[1], 2
 
     # --- 3. Starboard constraints exclude each other: previous course -----
-    head = np.asarray(v_prev if has_prev else v_pref, dtype=float)
-    return head * (R / math.hypot(float(head[0]), float(head[1]))), radii, float("nan"), 3
+    head = prev if has_prev else vp
+    k = R / math.hypot(head[0], head[1])
+    return np.array([head[0] * k, head[1] * k]), radii, float("nan"), 3
 
 
 # ---------------------------------------------------------------------------
@@ -587,95 +629,91 @@ class VOPolicyAnalytic(BasePolicy):
         ) -> CVAction:
             """Select a velocity action, resolving COLREGs roles from the stored graph."""
             annotated = self._annotate_roles(other_states)
-            own_pos   = own_state.position
-            own_vel   = np.array([own_state.vn, own_state.ve])
+            own_n,  own_e  = own_state.north, own_state.east
+            own_vn, own_ve = own_state.vn, own_state.ve
 
             # Initialise track line origin on first call
             if self._origin_pos is None:
-                self._origin_pos = own_pos.copy()
+                self._origin_pos = own_state.position
 
             # --- LOS guidance (paper Eqs. 14-16) ---------------------------------
             _pu1, _pu0 = float(self._v_pref_unit[1]), float(self._v_pref_unit[0])
-            _dx = own_pos[0] - self._origin_pos[0]
-            _dy = own_pos[1] - self._origin_pos[1]
+            _dx = own_n - self._origin_pos[0]
+            _dy = own_e - self._origin_pos[1]
             e   = _dx * _pu1 - _dy * _pu0
             psi_d      = self.nominal_psi + math.atan2(e, self.los_lookahead)
-            _cn, _sn   = math.cos(psi_d), math.sin(psi_d)
-            v_pref_now = np.array([self.ref_speed * _cn, self.ref_speed * _sn])
+            v_pref_now = (self.ref_speed * math.cos(psi_d), self.ref_speed * math.sin(psi_d))
 
             # --- 1. Obstacles that constrain this vessel ----------------------
             # Vessels with a COLREGs graph edge are always included; others
             # only while their TCPA is below tcpa_threshold.
-            _own_vn, _own_ve = own_vel[0], own_vel[1]
-            _own_n,  _own_e  = own_state.north, own_state.east
             threats: list[tuple[VesselState, VesselRole]] = []
             for obs, role, in_graph in annotated:
                 if in_graph:
                     threats.append((obs, role))
                     continue
-                _rvn = _own_vn - obs.vn
-                _rve = _own_ve - obs.ve
+                _rvn = own_vn - obs.vn
+                _rve = own_ve - obs.ve
                 _rsq = _rvn * _rvn + _rve * _rve
                 if _rsq < 1e-12:
                     threats.append((obs, role))
                     continue
-                _rpn = obs.north - _own_n
-                _rpe = obs.east  - _own_e
+                _rpn = obs.north - own_n
+                _rpe = obs.east  - own_e
                 if max((_rpn * _rvn + _rpe * _rve) / _rsq, 0.0) < self.tcpa_threshold:
                     threats.append((obs, role))
 
             if not threats:
                 if self.emit_debug:
                     self.last_debug = VODebugFrame(
-                        v_pref_vn=float(v_pref_now[0]), v_pref_ve=float(v_pref_now[1]),
-                        v_sel_vn=float(v_pref_now[0]),  v_sel_ve=float(v_pref_now[1]),
+                        v_pref_vn=v_pref_now[0], v_pref_ve=v_pref_now[1],
+                        v_sel_vn=v_pref_now[0],  v_sel_ve=v_pref_now[1],
                         cones=[], ref_speed=self.ref_speed,
                         fallback_active=False,
                     )
-                self._v_prev = v_pref_now.copy()
-                return CVAction(vn=float(v_pref_now[0]), ve=float(v_pref_now[1]))
+                self._v_prev = np.array(v_pref_now)
+                return CVAction(vn=v_pref_now[0], ve=v_pref_now[1])
 
             configs: list[RoleConfig] = [
                 role_config(role, self._d_pass_r, self.d_coll)
                 for _, role in threats
             ]
 
-            # --- 2. Starboard reference velocities ----------------------------
-            # For HEAD_ON obstacles the starboard constraint is anchored to a
-            # laterally-shifted reference velocity: rvo_weight * (lateral
-            # component of v_own - v_obs), consistent with the RVO cone apex.
-            def _sb_ref_vel(obs: VesselState, role: VesselRole) -> np.ndarray:
-                obs_vel_arr = np.array([obs.vn, obs.ve])
-                if role is not VesselRole.HEAD_ON:
-                    return obs_vel_arr
-                bearing       = obs.position - own_pos
-                bearing       = bearing / np.linalg.norm(bearing)
-                lateral       = np.array([-bearing[1], bearing[0]])
-                rvo_shift     = self.head_on_rvo_weight * (own_vel - obs_vel_arr)
-                lateral_shift = np.dot(rvo_shift, lateral) * lateral
-                return obs_vel_arr + lateral_shift
-
-            # --- 3. Per-obstacle geometry -------------------------------------
+            # --- 2./3. Per-obstacle geometry ----------------------------------
+            # Cone apex: the obstacle velocity, RVO-shifted for HEAD_ON.
+            # Starboard reference velocity: for HEAD_ON obstacles the
+            # starboard constraint is anchored to a laterally-shifted
+            # reference velocity: rvo_weight * (lateral component of
+            # v_own - v_obs), consistent with the RVO cone apex.
+            w = self.head_on_rvo_weight
             obstacles = []
             if self.emit_debug:
                 debug_starboard: list[StarboardConstraintDebugData] = []
             for (obs, role), cfg in zip(threats, configs):
-                rel  = obs.position - own_pos
-                dist = float(np.linalg.norm(rel))
+                rel_n, rel_e = obs.north - own_n, obs.east - own_e
+                dist = math.hypot(rel_n, rel_e)
                 if dist < 1e-6:
                     continue
-                axis    = rel / dist
-                obs_vel = np.array([obs.vn, obs.ve])
-                apex    = (obs_vel + self.head_on_rvo_weight * (own_vel - obs_vel)
-                           if role is VesselRole.HEAD_ON else obs_vel)
+                axis = (rel_n / dist, rel_e / dist)
+                obs_vn, obs_ve = obs.vn, obs.ve
+                if role is VesselRole.HEAD_ON:
+                    shift_n, shift_e = w * (own_vn - obs_vn), w * (own_ve - obs_ve)
+                    apex = (obs_vn + shift_n, obs_ve + shift_e)
+                else:
+                    apex = (obs_vn, obs_ve)
                 sb_unit = None
                 if cfg.starboard_only:
-                    sb_ref  = _sb_ref_vel(obs, role)
+                    if role is VesselRole.HEAD_ON:
+                        lat  = (-axis[1], axis[0])
+                        proj = shift_n * lat[0] + shift_e * lat[1]
+                        sb_ref = (obs_vn + proj * lat[0], obs_ve + proj * lat[1])
+                    else:
+                        sb_ref = (obs_vn, obs_ve)
                     sb_unit = (axis, sb_ref)
                     if self.emit_debug:
                         debug_starboard.append(StarboardConstraintDebugData(
-                            apex_vn=float(sb_ref[0]), apex_ve=float(sb_ref[1]),
-                            bearing_n=float(axis[0]), bearing_e=float(axis[1]),
+                            apex_vn=sb_ref[0], apex_ve=sb_ref[1],
+                            bearing_n=axis[0], bearing_e=axis[1],
                         ))
                 obstacles.append((apex, axis, dist, cfg.primary_r, sb_unit))
 
@@ -692,8 +730,8 @@ class VOPolicyAnalytic(BasePolicy):
 
             if self.emit_debug:
                 self.last_debug = VODebugFrame(
-                    v_pref_vn=float(v_pref_now[0]), v_pref_ve=float(v_pref_now[1]),
-                    v_sel_vn=float(v_sel[0]),       v_sel_ve=float(v_sel[1]),
+                    v_pref_vn=v_pref_now[0],  v_pref_ve=v_pref_now[1],
+                    v_sel_vn=float(v_sel[0]), v_sel_ve=float(v_sel[1]),
                     cones=[
                         VOConeDebugData(
                             apex_vn=apex[0], apex_ve=apex[1],

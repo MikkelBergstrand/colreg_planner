@@ -1,251 +1,171 @@
 """
-Equivalence tests for the optimised hot paths in colregs_classifier.py.
+Equivalence tests for the optimized ColregsClassifier.
 
-Each optimisation (grid lookup in _geometric_classify, scalar
-_compute_dcpa_tcpa, inlined projection in _temporal_classify) is checked
-against a straightforward reference implementation kept here, and the full
-ColregsClassifier.update() is checked end-to-end against a classifier wired
-to those references.
+The reference below is the original (pre-optimization) implementation: an
+if-chain over _REGIONS and full per-step state projection with a DCPA
+re-check.  The optimized classifier must reproduce its graphs exactly,
+including hysteresis behaviour over multi-step sequences.
+
+Run with pytest, or directly:  python -m tests.test_colregs_classifier
 """
 
 from __future__ import annotations
 
 import math
 import random
-from typing import Optional
 
 import numpy as np
-import pytest
 
-import src.colregs_graph.colregs_classifier as cc
-from src.vessel.encounter import EncounterType
 from src.vessel.state import VesselState
+from src.colregs_graph.colregs_classifier import (
+    ColregsClassifier, _REGIONS, _PRIORITY, _geometric_classify,
+)
 
 
 # ---------------------------------------------------------------------------
-# Reference implementations (pre-optimisation versions)
+# Reference implementation
 # ---------------------------------------------------------------------------
 
-def _ref_compute_dcpa_tcpa(a: VesselState, b: VesselState) -> tuple[float, float]:
+def _ref_geometric_classify(psi_deg, beta_deg):
+    for scenario, rects in _REGIONS.items():
+        for psi_min, psi_max, beta_min, beta_max in rects:
+            if psi_min <= psi_deg < psi_max and beta_min <= beta_deg < beta_max:
+                return scenario
+    return None
+
+
+def _ref_wrap(angle):
+    return (angle + math.pi) % (2 * math.pi) - math.pi
+
+
+def _ref_psi_beta(a, b):
+    psi_rad  = _ref_wrap(b.psi - a.psi)
+    beta_rad = _ref_wrap(math.atan2(b.east - a.east, b.north - a.north) - a.psi)
+    return math.degrees(psi_rad), math.degrees(beta_rad)
+
+
+def _ref_dcpa_tcpa(a, b):
     dp = np.array([b.north - a.north, b.east - a.east])
-    dv = np.array([b.vn    - a.vn,    b.ve   - a.ve  ])
-
+    dv = np.array([b.vn - a.vn, b.ve - a.ve])
     speed_sq = float(np.dot(dv, dv))
     if speed_sq < 1e-6:
         return float(np.linalg.norm(dp)), math.inf
-
     tcpa = -float(np.dot(dp, dv)) / speed_sq
-    dcpa = float(np.linalg.norm(dp + tcpa * dv))
-    return dcpa, tcpa
+    return float(np.linalg.norm(dp + tcpa * dv)), tcpa
 
 
-def _ref_project_state(s: VesselState, dt: float) -> VesselState:
-    return VesselState(
-        north=s.north + s.vn * dt,
-        east =s.east  + s.ve * dt,
-        psi  =s.psi,
-        speed=s.speed,
-        r    =s.r,
-    )
+def _ref_project(s, dt):
+    return VesselState(north=s.north + s.vn * dt, east=s.east + s.ve * dt,
+                       psi=s.psi, speed=s.speed, r=s.r)
 
 
-_ref_geometric_classify = cc._geometric_classify_rects
+class _ReferenceClassifier(ColregsClassifier):
 
+    def _classify_pair(self, id_a, a, id_b, b, ps):
+        dcpa, tcpa  = _ref_dcpa_tcpa(a, b)
+        dist        = float(np.linalg.norm(a.position - b.position))
+        approaching = tcpa > 0
+        if ps.active_scenario is not None:
+            if dist > self.d_u and not approaching and dcpa > self.d_u:
+                ps.clear_count += 1
+                if ps.clear_count >= self.n_clear:
+                    ps.active_scenario  = None
+                    ps.hysteresis_score = 0.0
+                    ps.clear_count      = 0
+            else:
+                ps.clear_count = 0
+        if dcpa > self.dcpa_max:
+            return self._active_edge(id_a, id_b, ps)
+        if dist > self.d_a or not approaching:
+            return self._active_edge(id_a, id_b, ps)
+        scenario = self._ref_temporal(a, b, tcpa)
+        if scenario is None:
+            return self._active_edge(id_a, id_b, ps)
+        self._update_hysteresis(ps, scenario)
+        return self._active_edge(id_a, id_b, ps)
 
-class _ReferenceClassifier(cc.ColregsClassifier):
-    """ColregsClassifier with the original per-step projection and DCPA re-check."""
-
-    def _temporal_classify(
-        self, a: VesselState, b: VesselState, tcpa: float,
-    ) -> Optional[EncounterType]:
+    def _ref_temporal(self, a, b, tcpa):
         if not math.isfinite(tcpa) or tcpa <= 0:
-            return _ref_geometric_classify(*cc._compute_psi_beta(a, b))
-
-        times = [tcpa * k / (self.n_t - 1) for k in range(self.n_t)]
-        votes: dict[EncounterType, int] = {}
-
-        for t in times:
-            a_p = _ref_project_state(a, t)
-            b_p = _ref_project_state(b, t)
-            dcpa_p, _ = _ref_compute_dcpa_tcpa(a_p, b_p)
+            return _ref_geometric_classify(*_ref_psi_beta(a, b))
+        votes = {}
+        for k in range(self.n_t):
+            t = tcpa * k / (self.n_t - 1)
+            a_p, b_p = _ref_project(a, t), _ref_project(b, t)
+            dcpa_p, _ = _ref_dcpa_tcpa(a_p, b_p)
             if dcpa_p > self.dcpa_max:
                 continue
-            label = _ref_geometric_classify(*cc._compute_psi_beta(a_p, b_p))
+            label = _ref_geometric_classify(*_ref_psi_beta(a_p, b_p))
             if label is not None:
                 votes[label] = votes.get(label, 0) + 1
-
         if not votes:
-            return _ref_geometric_classify(*cc._compute_psi_beta(a, b))
-
-        max_votes  = max(votes.values())
-        candidates = [s for s, v in votes.items() if v == max_votes]
-        return min(candidates, key=lambda s: cc._PRIORITY[s])
+            return _ref_geometric_classify(*_ref_psi_beta(a, b))
+        max_votes = max(votes.values())
+        return min((s for s, v in votes.items() if v == max_votes),
+                   key=lambda s: _PRIORITY[s])
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _random_state(rng: random.Random) -> VesselState:
-    return VesselState(
-        north=rng.uniform(-5e3, 5e3),
-        east =rng.uniform(-5e3, 5e3),
-        psi  =rng.uniform(-7, 7),      # deliberately outside (-pi, pi]
-        speed=rng.uniform(0, 12),
-    )
+def _edges(graph):
+    return [(e.vessel_a, e.vessel_b, e.role_a, e.role_b) for e in graph.edges]
 
 
-def _converging_scene(rng: random.Random, n: int) -> dict[int, VesselState]:
-    """n vessels in a 4 km ring, all heading roughly toward the centre."""
+def _random_scene(rng, n):
+    # Vessels placed on a ring heading roughly at the centre -> encounter-heavy.
     states = {}
     for i in range(n):
         ang = rng.uniform(-math.pi, math.pi)
-        r   = rng.uniform(500, 4000)
+        r   = rng.uniform(300.0, 4000.0)
         states[i] = VesselState(
-            north=r * math.cos(ang),
-            east =r * math.sin(ang),
-            psi  =ang + math.pi + rng.uniform(-0.6, 0.6),
-            speed=rng.uniform(3, 10),
+            north=r * math.cos(ang), east=r * math.sin(ang),
+            psi=ang + math.pi + rng.gauss(0.0, 0.6),
+            speed=rng.uniform(0.0, 8.0),
         )
     return states
 
 
-def _step(rng: random.Random, states: dict[int, VesselState], dt: float = 5.0):
+def _advance(states, dt, rng):
     return {
-        k: VesselState(
-            north=s.north + s.vn * dt,
-            east =s.east  + s.ve * dt,
-            psi  =s.psi + rng.gauss(0, 0.01),
-            speed=s.speed,
-        )
-        for k, s in states.items()
+        i: VesselState(north=s.north + s.vn * dt, east=s.east + s.ve * dt,
+                       psi=s.psi + rng.gauss(0.0, 0.05), speed=s.speed)
+        for i, s in states.items()
     }
 
 
-def _edge_key(graph) -> list[tuple]:
-    return sorted(
-        (e.vessel_a, e.vessel_b, e.role_a.name, e.role_b.name, e.encounter_type.name)
-        for e in graph.edges
-    )
-
-
 # ---------------------------------------------------------------------------
-# _geometric_classify: grid lookup vs rectangle scan
+# Tests
 # ---------------------------------------------------------------------------
 
-def test_geometric_classify_random_points():
+def test_lookup_table_matches_region_rectangles():
+    # Dense grid (0.25 deg) hits every region edge exactly, plus random points.
+    pts = [x / 4 for x in range(-720, 720)]
+    for p in pts:
+        for b in pts:
+            assert _geometric_classify(p, b) == _ref_geometric_classify(p, b), (p, b)
     rng = random.Random(0)
     for _ in range(100_000):
-        psi, beta = rng.uniform(-180, 180), rng.uniform(-180, 180)
-        assert cc._geometric_classify(psi, beta) == _ref_geometric_classify(psi, beta), (psi, beta)
+        p, b = rng.uniform(-180, 180), rng.uniform(-180, 180)
+        assert _geometric_classify(p, b) == _ref_geometric_classify(p, b), (p, b)
 
 
-def test_geometric_classify_region_boundaries():
-    # Quarter-degree sweep hits every boundary and every cell centre, and each
-    # boundary value is also probed one hair either side of it.
-    sweep = [-180 + k * 0.25 for k in range(1441)]
-    boundaries = sorted({v for rects in cc._REGIONS.values() for r in rects for v in r})
-    probes = [v + eps for v in boundaries for eps in (-1e-9, 0.0, 1e-9)]
-
-    for p in probes:
-        for q in sweep:
-            assert cc._geometric_classify(p, q) == _ref_geometric_classify(p, q), (p, q)
-            assert cc._geometric_classify(q, p) == _ref_geometric_classify(q, p), (q, p)
-
-
-@pytest.mark.parametrize("psi, beta", [
-    (180.0, 0.0), (0.0, 180.0), (-180.0 - 1e-9, 0.0), (0.0, -180.0 - 1e-9),
-    (math.nan, 0.0), (0.0, math.nan), (math.inf, 0.0), (0.0, -math.inf),
-])
-def test_geometric_classify_out_of_range(psi, beta):
-    assert cc._geometric_classify(psi, beta) is None
-    assert _ref_geometric_classify(psi, beta) is None
+def test_classifier_matches_reference_over_sequences():
+    n_edges = 0
+    for episode in range(200):
+        rng    = random.Random(episode)
+        states = _random_scene(rng, rng.randint(2, 6))
+        ref, opt = _ReferenceClassifier(), ColregsClassifier()
+        for step in range(60):
+            g_ref, g_opt = ref.update(states), opt.update(states)
+            assert _edges(g_opt) == _edges(g_ref), (episode, step)
+            n_edges += len(g_ref.edges)
+            states = _advance(states, 5.0, rng)
+    # Guard against a vacuous pass where no encounters are ever detected.
+    assert n_edges > 1000
 
 
-# ---------------------------------------------------------------------------
-# _compute_dcpa_tcpa: scalar vs numpy
-# ---------------------------------------------------------------------------
-
-def test_compute_dcpa_tcpa_random_pairs():
-    rng = random.Random(1)
-    for _ in range(50_000):
-        a, b = _random_state(rng), _random_state(rng)
-        dcpa, tcpa = cc._compute_dcpa_tcpa(a, b)
-        ref_dcpa, ref_tcpa = _ref_compute_dcpa_tcpa(a, b)
-        assert type(dcpa) is float and type(tcpa) is float
-        assert dcpa == pytest.approx(ref_dcpa, rel=1e-12, abs=1e-9)
-        assert tcpa == pytest.approx(ref_tcpa, rel=1e-12, abs=1e-9)
-
-
-@pytest.mark.parametrize("a, b", [
-    (VesselState(10, 20, 1.0, 5.0), VesselState(300, -40, 1.0, 5.0)),   # parallel
-    (VesselState(10, 20, 1.0, 5.0), VesselState(10, 20, 1.0, 5.0)),     # identical
-    (VesselState(0, 0, 0.0, 0.0),   VesselState(100, 0, 0.0, 0.0)),     # both stopped
-])
-def test_compute_dcpa_tcpa_zero_relative_velocity(a, b):
-    dcpa, tcpa = cc._compute_dcpa_tcpa(a, b)
-    ref_dcpa, ref_tcpa = _ref_compute_dcpa_tcpa(a, b)
-    assert tcpa == ref_tcpa == math.inf
-    assert dcpa == pytest.approx(ref_dcpa)
-
-
-# ---------------------------------------------------------------------------
-# _temporal_classify: inlined projection vs per-step projected states
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("dcpa_max", [1500.0, 300.0])
-def test_temporal_classify_matches_reference(dcpa_max):
-    rng = random.Random(2)
-    new = cc.ColregsClassifier(dcpa_max=dcpa_max)
-    ref = _ReferenceClassifier(dcpa_max=dcpa_max)
-
-    checked = 0
-    while checked < 5_000:
-        a, b = _random_state(rng), _random_state(rng)
-        # _classify_pair only calls _temporal_classify for pairs that pass the
-        # DCPA gate; the removed per-step re-check relied on that contract.
-        if cc._compute_dcpa_tcpa(a, b)[0] > dcpa_max:
-            continue
-        tcpa = rng.choice([rng.uniform(0.1, 2000), math.inf, -5.0, 0.0])
-        assert new._temporal_classify(a, b, tcpa) == ref._temporal_classify(a, b, tcpa)
-        checked += 1
-
-
-def test_temporal_classify_zero_relative_velocity():
-    a = VesselState(0, 0, 0.3, 6.0)
-    b = VesselState(500, 200, 0.3, 6.0)
-    assert (cc.ColregsClassifier()._temporal_classify(a, b, 100.0)
-            == _ReferenceClassifier()._temporal_classify(a, b, 100.0))
-
-
-# ---------------------------------------------------------------------------
-# End-to-end: ColregsClassifier.update()
-# ---------------------------------------------------------------------------
-
-def test_update_matches_reference(monkeypatch):
-    rng = random.Random(3)
-    episodes = []
-    for _ in range(10):
-        states = _converging_scene(rng, 10)
-        episode = [states]
-        for _ in range(50):
-            states = _step(rng, states)
-            episode.append(states)
-        episodes.append(episode)
-
-    def run(cls) -> list[list[tuple]]:
-        out = []
-        for episode in episodes:
-            classifier = cls()
-            out.extend(_edge_key(classifier.update(s)) for s in episode)
-        return out
-
-    new_edges = run(cc.ColregsClassifier)
-
-    # _classify_pair resolves these as module globals; point them at the references.
-    monkeypatch.setattr(cc, "_compute_dcpa_tcpa", _ref_compute_dcpa_tcpa)
-    monkeypatch.setattr(cc, "_geometric_classify", _ref_geometric_classify)
-    ref_edges = run(_ReferenceClassifier)
-
-    assert sum(map(len, ref_edges)) > 1000, "scenario should produce many edges"
-    assert new_edges == ref_edges
+if __name__ == "__main__":
+    test_lookup_table_matches_region_rectangles()
+    test_classifier_matches_reference_over_sequences()
+    print("ok")

@@ -61,8 +61,9 @@ class TrackLibrary:
         assert vel_fwd.shape[1] == config.H + 1, "vel_fwd horizon != config.H + 1"
 
         self.config = config
-        self._pos_match = pos_match.astype(np.float32)
-        self._vel_fwd = vel_fwd.astype(np.float32)
+        # copy=False: a loaded library is already float32 (~2 GB), no second copy
+        self._pos_match = pos_match.astype(np.float32, copy=False)
+        self._vel_fwd = vel_fwd.astype(np.float32, copy=False)
         self._kdtree = KDTree(self._pos_match[:, -1, :].astype(np.float64))
 
     # ------------------------------------------------------------------

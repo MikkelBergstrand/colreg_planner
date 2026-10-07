@@ -41,6 +41,9 @@ class PredictionConfig:
     top_k_hypotheses:           int   = 1      # how many responsiveness-hypothesis trajectory bundles
                                                # to draw live (1 = top-1 only; >1 overlays the next-most-
                                                # likely bundles faded). Needs use_responding_filter.
+    parallel_workers:           int | str = "auto"  # worker processes for the top-K hypothesis rollouts
+                                               # (0 = serial); "auto" = min(top_k, 2^N, CPU cores - 1),
+                                               # i.e. no workers when top_k_hypotheses is 1
     # --- DCPA evaluation (prediction.dcpa_eval block) -----------------------
     # At each listed sim time, roll out a prediction from the true state and
     # compare the predicted distance at closest point of approach (DCPA) with

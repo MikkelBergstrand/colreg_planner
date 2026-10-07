@@ -68,11 +68,10 @@ prediction:
   rollout_model: ct_decoupled_ar
   filter_rollout_model: ct_decoupled_ar
   show_nominal_comparison: false
-  reclassify_in_rollout: false # re-run the COLREGs classifier at every rollout step (paper Sec. V-D); false = fixed graph, faster
-  top_k_hypotheses:
-    1 # draw the K most-likely responsiveness-hypothesis trajectory
-    # bundles live (1 = top-1 only). With N vessels there are 2^N
-    # hypotheses; K is capped at that automatically.
+  reclassify_in_rollout: false   # re-run the COLREGs classifier at every rollout step (paper Sec. V-D); false = fixed graph, faster
+  top_k_hypotheses: 4        # draw the K most-likely responsiveness-hypothesis trajectory
+                              # bundles live (1 = top-1 only). With N vessels there are 2^N
+                              # hypotheses; K is capped at that automatically.
 
   # DCPA evaluation: at each listed sim time, roll a prediction forward from
   # the true state and compare its DCPA against the ground truth, for both

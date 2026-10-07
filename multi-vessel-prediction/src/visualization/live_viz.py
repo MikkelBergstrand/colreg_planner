@@ -203,7 +203,7 @@ class VizConfig:
                                                        # window (overrides padding/auto extent)
     trail_length: int                 = 80
     trail_alpha:  float               = 0.65
-    realtime_factor: float            = 10.0
+    realtime_factor: float            = 100.0
     save_path:    Optional[str]       = None
     fps:          int                 = 20
     debug_viz:          bool  = False  # show velocity/action-space panel
@@ -307,7 +307,7 @@ class VizConfig:
             ylim          = (tuple(d["ylim"]) if d.get("ylim") is not None else None),
             trail_length  = d.get("trail_length",         80),
             trail_alpha   = d.get("trail_alpha",          0.65),
-            realtime_factor = d.get("realtime_factor",   10.0),
+            realtime_factor = d.get("realtime_factor",  100.0),
             save_path     = d.get("save_path",            None),
             fps           = d.get("fps",                  20),
             debug_viz          = debug_viz,
@@ -1903,8 +1903,9 @@ class LiveVisualizer:
     # ------------------------------------------------------------------
 
     def start_recording(self, path: str, fps: int) -> None:
-        from matplotlib.animation import FFMpegWriter
-        writer = FFMpegWriter(fps=fps)
+        # .gif -> Pillow (no ffmpeg needed); anything else -> ffmpeg (mp4 etc.).
+        from matplotlib.animation import FFMpegWriter, PillowWriter
+        writer = PillowWriter(fps=fps) if path.lower().endswith(".gif") else FFMpegWriter(fps=fps)
         writer.setup(self.fig, path, dpi=120)
         self._video_writer = writer
 

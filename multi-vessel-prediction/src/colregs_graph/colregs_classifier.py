@@ -28,10 +28,9 @@ Usage
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from typing import Optional
-
-import numpy as np
 
 from src.vessel.state import VesselState
 from src.vessel.encounter import EncounterType
@@ -86,91 +85,59 @@ _PRIORITY: dict[EncounterType, int] = {
 }
 
 
-def _in_region(
-    psi_deg: float,
-    beta_deg: float,
-    rects: list[tuple[float, float, float, float]],
-) -> bool:
-    for psi_min, psi_max, beta_min, beta_max in rects:
-        if psi_min <= psi_deg < psi_max and beta_min <= beta_deg < beta_max:
-            return True
-    return False
+# ---------------------------------------------------------------------------
+# Region lookup table
+#
+# Every rectangle edge in _REGIONS is a breakpoint, so the (psi, beta) plane
+# splits into a grid of cells that each lie entirely inside or outside every
+# region.  bisect_right on the sorted breakpoints gives the cell index exactly
+# (half-open [min, max) matches the region membership rule), and the table
+# holds the first-matching scenario per cell, preserving _REGIONS order as the
+# tie-break where rectangles overlap.  Index 0 is the cell below all edges.
+# ---------------------------------------------------------------------------
+
+_PSI_EDGES:  list[float] = sorted({e for rs in _REGIONS.values() for r in rs for e in r[:2]})
+_BETA_EDGES: list[float] = sorted({e for rs in _REGIONS.values() for r in rs for e in r[2:]})
 
 
-def _geometric_classify_rects(psi_deg: float, beta_deg: float) -> Optional[EncounterType]:
-    """Reference implementation: scan the region rectangles in _REGIONS order."""
+def _region_lookup(psi_deg: float, beta_deg: float) -> Optional[EncounterType]:
+    """First scenario in _REGIONS whose rectangles contain (psi, beta), or None."""
     for scenario, rects in _REGIONS.items():
-        if _in_region(psi_deg, beta_deg, rects):
-            return scenario
+        for psi_min, psi_max, beta_min, beta_max in rects:
+            if psi_min <= psi_deg < psi_max and beta_min <= beta_deg < beta_max:
+                return scenario
     return None
 
 
-# Precomputed (psi, beta) lookup grid. Every boundary in _REGIONS is a multiple
-# of _GRID_RES, so each cell lies entirely inside one region and the lookup is
-# exact (up to float rounding of the index right at a boundary).
-_GRID_RES = 0.5                       # [deg]
-_GRID_SCALE = 1.0 / _GRID_RES
-_GRID_N = int(360 * _GRID_SCALE)      # cells per axis, covering [-180, 180)
-
-assert all(
-    float(v * _GRID_SCALE).is_integer()
-    for rects in _REGIONS.values() for rect in rects for v in rect
-), "_REGIONS boundaries must lie on the lookup grid"
-
-def _build_grid() -> list[Optional[EncounterType]]:
-    # Paint rectangles in reverse _REGIONS order so earlier scenarios win
-    # overlaps, matching the first-match semantics of _geometric_classify_rects.
-    scenarios = list(_REGIONS)
-    codes = np.full((_GRID_N, _GRID_N), -1, dtype=np.int8)
-    for code in reversed(range(len(scenarios))):
-        for psi_min, psi_max, beta_min, beta_max in _REGIONS[scenarios[code]]:
-            codes[
-                int((psi_min + 180) * _GRID_SCALE):int((psi_max + 180) * _GRID_SCALE),
-                int((beta_min + 180) * _GRID_SCALE):int((beta_max + 180) * _GRID_SCALE),
-            ] = code
-    lut = scenarios + [None]   # code -1 -> None
-    return [lut[c] for c in codes.ravel().tolist()]
+def _build_table() -> list[list[Optional[EncounterType]]]:
+    # Each cell is sampled at its lower-left corner, which lies inside the
+    # cell; the out-of-range cells (index 0) map to None.
+    return [
+        [_region_lookup(p, b) if i and j else None
+         for j, b in enumerate([-math.inf] + _BETA_EDGES)]
+        for i, p in enumerate([-math.inf] + _PSI_EDGES)
+    ]
 
 
-_GRID: list[Optional[EncounterType]] = _build_grid()
+_TABLE = _build_table()
 
 
 def _geometric_classify(psi_deg: float, beta_deg: float) -> Optional[EncounterType]:
     """Return EncounterType from vessel_a's perspective, or None."""
-    x = (psi_deg + 180.0) * _GRID_SCALE
-    y = (beta_deg + 180.0) * _GRID_SCALE
-    if not (0.0 <= x < _GRID_N and 0.0 <= y < _GRID_N):   # also rejects NaN
-        return None
-    return _GRID[int(x) * _GRID_N + int(y)]
+    return _TABLE[bisect_right(_PSI_EDGES, psi_deg)][bisect_right(_BETA_EDGES, beta_deg)]
 
 
 # ---------------------------------------------------------------------------
 # Geometry helpers (NED, radians CW from North)
 # ---------------------------------------------------------------------------
 
-def _wrap(angle: float) -> float:
-    """Wrap angle to (-pi, pi]."""
-    return (angle + math.pi) % (2 * math.pi) - math.pi
+_TWO_PI = 2 * math.pi
+_RAD2DEG = 180.0 / math.pi
 
 
-def _bearing_to(a: VesselState, b: VesselState) -> float:
-    """Bearing from a to b [rad], CW from North (NED convention)."""
-    dn = b.north - a.north
-    de = b.east  - a.east
-    return math.atan2(de, dn)
-
-
-def _compute_psi_beta(a: VesselState, b: VesselState) -> tuple[float, float]:
-    """
-    Relative course (psi) and relative bearing (beta) from a's perspective,
-    in degrees. Both wrapped to (-180, 180].
-
-    psi  = heading_b - heading_a   (relative course)
-    beta = bearing_to_b - heading_a  (relative bearing)
-    """
-    psi_rad  = _wrap(b.psi - a.psi)
-    beta_rad = _wrap(_bearing_to(a, b) - a.psi)
-    return math.degrees(psi_rad), math.degrees(beta_rad)
+def _wrap_deg(angle: float) -> float:
+    """Wrap angle [rad] to [-pi, pi) and convert to degrees."""
+    return ((angle + math.pi) % _TWO_PI - math.pi) * _RAD2DEG
 
 
 def _compute_dcpa_tcpa(a: VesselState, b: VesselState) -> tuple[float, float]:
@@ -179,7 +146,6 @@ def _compute_dcpa_tcpa(a: VesselState, b: VesselState) -> tuple[float, float]:
 
     tcpa < 0 means vessels are already diverging.
     """
-    # Plain scalar math: numpy's per-call overhead dominates on 2-vectors.
     dn  = b.north - a.north
     de  = b.east  - a.east
     dvn = float(b.vn - a.vn)
@@ -296,9 +262,20 @@ class ColregsClassifier:
         ps: _PairState,
     ) -> Optional[ColregsEdge]:
 
-        dcpa, tcpa    = _compute_dcpa_tcpa(a, b)
-        dist          = float(np.linalg.norm(a.position - b.position))
-        approaching   = tcpa > 0
+        # Relative position / velocity of b w.r.t. a, and CPA (tcpa < 0 means
+        # the vessels are already diverging).
+        dn  = b.north - a.north
+        de  = b.east  - a.east
+        dvn = b.speed * math.cos(b.psi) - a.speed * math.cos(a.psi)
+        dve = b.speed * math.sin(b.psi) - a.speed * math.sin(a.psi)
+        dist     = math.hypot(dn, de)
+        speed_sq = dvn * dvn + dve * dve
+        if speed_sq < 1e-6:
+            dcpa, tcpa = dist, math.inf
+        else:
+            tcpa = -(dn * dvn + de * dve) / speed_sq
+            dcpa = math.hypot(dn + tcpa * dvn, de + tcpa * dve)
+        approaching = tcpa > 0
 
         # --- Hysteresis: clear active scenario if vessels are separating,
         #     beyond the discard distance, AND the backward-projected CPA also
@@ -327,7 +304,7 @@ class ColregsClassifier:
             return self._active_edge(id_a, id_b, ps)
 
         # --- Temporally aware geometric classification
-        scenario = self._temporal_classify(a, b, tcpa)
+        scenario = self._temporal_classify(a.psi, b.psi, dn, de, dvn, dve, tcpa)
         if scenario is None:
             return self._active_edge(id_a, id_b, ps)
 
@@ -353,40 +330,39 @@ class ColregsClassifier:
 
     def _temporal_classify(
         self,
-        a: VesselState,
-        b: VesselState,
+        psi_a: float, psi_b: float,
+        dn: float, de: float,
+        dvn: float, dve: float,
         tcpa: float,
     ) -> Optional[EncounterType]:
         """
         Linearly project both vessels to CPA, classify at n_t equally spaced
         steps, and return the priority-weighted mode scenario label.
-        """
-        if not math.isfinite(tcpa) or tcpa <= 0:
-            return _geometric_classify(*_compute_psi_beta(a, b))
 
-        times = [tcpa * k / (self.n_t - 1) for k in range(self.n_t)]
+        (dn, de) and (dvn, dve) are b's position and velocity relative to a.
+        Under constant-velocity projection the relative course psi is fixed,
+        so only the relative bearing beta(t) of dn + t*dvn, de + t*dve varies.
+        The DCPA is also invariant along the projection (same relative line),
+        so the caller's DCPA gate covers every projected step.
+        """
+        row   = _TABLE[bisect_right(_PSI_EDGES, _wrap_deg(psi_b - psi_a))]
+        beta0 = _wrap_deg(math.atan2(de, dn) - psi_a)
+
+        if not math.isfinite(tcpa) or tcpa <= 0:
+            return row[bisect_right(_BETA_EDGES, beta0)]
+
+        n = self.n_t - 1
         votes: dict[EncounterType, int] = {}
 
-        # Constant-heading projection: velocities and relative course are
-        # invariant over t, so compute them once and project with scalar math
-        # (equivalent to projecting each state and calling _compute_psi_beta on
-        # the projected pair). The relative track is also invariant, so DCPA is
-        # the same at every projected step; the caller has already gated on it.
-        a_vn, a_ve = float(a.vn), float(a.ve)
-        b_vn, b_ve = float(b.vn), float(b.ve)
-        a_psi      = a.psi
-        psi_deg    = math.degrees(_wrap(b.psi - a_psi))
-
-        for t in times:
-            dn = (b.north + b_vn * t) - (a.north + a_vn * t)
-            de = (b.east  + b_ve * t) - (a.east  + a_ve * t)
-            beta_deg = math.degrees(_wrap(math.atan2(de, dn) - a_psi))
-            label = _geometric_classify(psi_deg, beta_deg)
+        for k in range(self.n_t):
+            t = tcpa * k / n
+            beta  = _wrap_deg(math.atan2(de + t * dve, dn + t * dvn) - psi_a)
+            label = row[bisect_right(_BETA_EDGES, beta)]
             if label is not None:
                 votes[label] = votes.get(label, 0) + 1
 
         if not votes:
-            return _geometric_classify(*_compute_psi_beta(a, b))
+            return row[bisect_right(_BETA_EDGES, beta0)]
 
         max_votes  = max(votes.values())
         candidates = [s for s, v in votes.items() if v == max_votes]

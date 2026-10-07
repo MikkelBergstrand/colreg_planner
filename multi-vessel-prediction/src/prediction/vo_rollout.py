@@ -47,7 +47,7 @@ import math
 import time
 from dataclasses import dataclass, fields, replace
 from itertools import product as itertools_product
-from typing import Iterable, Optional
+from typing import TYPE_CHECKING, Iterable, Optional
 
 import numpy as np
 
@@ -59,6 +59,9 @@ from src.policies.vo_common import RolePassDistances
 from src.colregs_graph.colregs_graph import ColregsGraph, apply_responsiveness
 from src.colregs_graph.colregs_classifier import ColregsClassifier
 from src.motion_models.adapters import build_adapter
+
+if TYPE_CHECKING:
+    from src.prediction.parallel import Pending, RolloutPool
 
 
 # ---------------------------------------------------------------------------
@@ -472,8 +475,9 @@ def enumerate_and_rollout(
     top_k:            int                                                   = 1,
     colregs_classifier: Optional[ColregsClassifier]                         = None,
     fixed_plan_ids:   Optional[set[str]]                                    = None,
+    pool:             Optional["RolloutPool"]                               = None,
     _timings:         Optional[dict]                                        = None,
-) -> list[tuple[dict[str, list[VesselState]], float]]:
+) -> list[tuple[dict[str, list[VesselState]], dict[str, Intent], float]]:
     """Enumerate 2^M COLREGs graph hypotheses from per-vessel responsiveness posteriors
     and realize the top-K as trajectory bundles via vo_rollout.
 
@@ -491,40 +495,89 @@ def enumerate_and_rollout(
         never mutated.
     fixed_plan_ids : vessels that execute the pref_vel_seq in their agent
         config regardless of traffic (see vo_rollout).
+    pool : optional RolloutPool (prediction/parallel.py).  Given, the
+        hypothesis rollouts run in parallel worker processes; results are
+        identical to the serial run.  _timings is then not collected.
 
     Returns
     -------
     list of (trajectories, assignment, weight) sorted by weight descending,
     length <= top_k.  ``assignment`` maps vessel_id -> Intent for that hypothesis.
     """
+    return start_enumerate_and_rollout(
+        initial_states, responding_probs, nom_graph, dt, n_steps,
+        agent_configs      = agent_configs,
+        vessel_index_map   = vessel_index_map,
+        top_k              = top_k,
+        colregs_classifier = colregs_classifier,
+        fixed_plan_ids     = fixed_plan_ids,
+        pool               = pool,
+        _timings           = _timings,
+    ).result()
+
+
+def start_enumerate_and_rollout(
+    initial_states:   dict[str, VesselState],
+    responding_probs: dict[str, float],
+    nom_graph:        ColregsGraph,
+    dt:               float,
+    n_steps:          int,
+    agent_configs:    Optional[dict[str, VOAgentConfig]]                    = None,
+    vessel_index_map: Optional[dict[str, int]]                              = None,
+    top_k:            int                                                   = 1,
+    colregs_classifier: Optional[ColregsClassifier]                         = None,
+    fixed_plan_ids:   Optional[set[str]]                                    = None,
+    pool:             Optional["RolloutPool"]                               = None,
+    _timings:         Optional[dict]                                        = None,
+) -> "Pending":
+    """enumerate_and_rollout, split in two: the rollouts are started (on the
+    pool, if given) when this returns, and .result() on the returned Pending
+    waits for them and gives enumerate_and_rollout's return value.
+
+    Lets a caller start the rollouts of one frame and go on with the next
+    frame while they run (see scripts/run_AIS.py, metrics_run).  Without a
+    pool the rollouts run here, before this returns.
+    """
+    from src.prediction.parallel import Pending, submit_rollout
+
     vessel_ids = list(initial_states.keys())
 
-    results: list[tuple[dict[str, list[VesselState]], dict[str, Intent], float]] = []
+    # Start one rollout per hypothesis.
+    started: list[tuple[dict[str, Intent], float, "Pending"]] = []
     for assignment_by_vid, weight in rank_hypotheses(vessel_ids, responding_probs, top_k):
         intents: dict[int, Intent] = {
             (vessel_index_map[vid] if vessel_index_map else i): assignment_by_vid[vid]
             for i, vid in enumerate(vessel_ids)
         }
         effective_graph = apply_responsiveness(nom_graph, intents)
-        try:
-            trajs = vo_rollout(
-                initial_states   = initial_states,
-                dt               = dt,
-                n_steps          = n_steps,
-                agent_configs    = agent_configs,
-                colregs_graph    = effective_graph,
-                vessel_index_map = vessel_index_map,
-                colregs_classifier = (copy.deepcopy(colregs_classifier)
-                                      if colregs_classifier is not None else None),
-                intents          = intents,
-                fixed_plan_ids   = fixed_plan_ids,
-                _timings         = _timings,
-            )
-        except ValueError:
-            trajs = {vid: [s] * (n_steps + 1) for vid, s in initial_states.items()}
-        results.append((trajs, assignment_by_vid, weight))
+        handle = submit_rollout(
+            pool,
+            initial_states   = initial_states,
+            dt               = dt,
+            n_steps          = n_steps,
+            agent_configs    = agent_configs,
+            colregs_graph    = effective_graph,
+            vessel_index_map = vessel_index_map,
+            colregs_classifier = (copy.deepcopy(colregs_classifier)
+                                  if colregs_classifier is not None else None),
+            intents          = intents,
+            fixed_plan_ids   = fixed_plan_ids,
+            _timings         = _timings,
+        )
+        started.append((assignment_by_vid, weight, handle))
 
-    return results
+    # Collect them in the same order.
+    def collect() -> list[tuple[dict[str, list[VesselState]], dict[str, Intent], float]]:
+        results = []
+        for assignment_by_vid, weight, handle in started:
+            try:
+                trajs = handle.result()
+            except ValueError:
+                trajs = {vid: [s] * (n_steps + 1) for vid, s in initial_states.items()}
+            results.append((trajs, assignment_by_vid, weight))
+        return results
+
+    return Pending(collect)
 
 
 # ---------------------------------------------------------------------------

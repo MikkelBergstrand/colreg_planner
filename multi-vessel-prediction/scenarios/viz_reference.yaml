@@ -32,7 +32,7 @@ viz:
   # --- Playback --------------------------------------------------------------
   trail_length: 80               # steps of trajectory history shown; 0 = infinite (full trail)
   trail_alpha: 0.65
-  realtime_factor: 10.0          # playback speed multiplier: 1.0 = real-time, 2.0 = 2x faster.
+  realtime_factor: 100.0         # playback speed multiplier: 1.0 = real-time, 2.0 = 2x faster.
                                   # AIS data (dt=2s) typically wants 500-1000+ to be watchable.
   save_path: null                # run_simulation.py only: e.g. "output.gif" — null means display
                                   # live instead of rendering straight to a file (or use --save)
