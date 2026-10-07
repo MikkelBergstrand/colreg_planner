@@ -59,7 +59,8 @@ import numpy as np
 
 from src.colregs_graph.colregs_classifier import ColregsClassifier, _compute_dcpa_tcpa
 from src.colregs_graph.colregs_graph import ColregsGraph, VesselRole, apply_responsiveness
-from src.prediction.vo_rollout import VOAgentConfig, rank_hypotheses, vo_rollout
+from src.prediction.parallel import RolloutPool, submit_rollout
+from src.prediction.vo_rollout import VOAgentConfig, rank_hypotheses
 from src.vessel.state import Intent, VesselState, wrap_angle
 
 
@@ -143,6 +144,9 @@ class ManoeuvreSearchPlanner:
     vessel_index_map : vessel_id -> COLREGs graph index.
     own_intent : the own ship's intent. A non-responsive own ship never
         manoeuvres, so it always gets the nominal plan.
+    pool : optional RolloutPool (prediction/parallel.py). Given, every plan's
+        rollouts are submitted to it before any is scored, so they run in
+        parallel. The result is the same either way.
     """
 
     def __init__(
@@ -152,12 +156,14 @@ class ManoeuvreSearchPlanner:
         vessel_index_map: dict[str, int],
         own_intent:       Intent = Intent.RESPONSIVE,
         config:           SearchConfig | None = None,
+        pool:             RolloutPool | None = None,
     ) -> None:
         self.own_id    = own_id
         self.configs   = agent_configs
         self.index_map = vessel_index_map
         self.own_intent = own_intent
         self.cfg       = config or SearchConfig()
+        self.pool      = pool
         # Action under way and when it started: a replan may keep it going,
         # but only its first edge_s is a commitment.
         self._active: Optional[tuple[SearchAction, float]] = None
@@ -249,14 +255,15 @@ class ManoeuvreSearchPlanner:
         }
         scored: list[tuple[ScoredPlan, list[dict[str, list[VesselState]]]]] = []
 
-        for actions in self._sequences():
+        # Submit every rollout first, so that with a pool they all run in parallel.
+        sequences = self._sequences()
+        pending = []
+        for actions in sequences:
             configs = dict(self.configs)
             configs[self.own_id] = replace(own_cfg, pref_vel_seq=self.velocity_sequence(actions))
-
-            safety, colregs, worst_d = [], [], {vid: math.inf for vid in others}
-            rollouts = []
-            for (assignment, p_h), (int_intents, graph) in zip(hyps, graphs):
-                trajs = vo_rollout(
+            pending.append([
+                submit_rollout(
+                    self.pool,
                     initial_states     = states,
                     dt                 = c.plan_dt,
                     n_steps            = H,
@@ -267,6 +274,14 @@ class ManoeuvreSearchPlanner:
                     intents            = int_intents,
                     fixed_plan_ids     = {self.own_id},
                 )
+                for int_intents, graph in graphs
+            ])
+
+        for actions, handles in zip(sequences, pending):
+            safety, colregs, worst_d = [], [], {vid: math.inf for vid in others}
+            rollouts = []
+            for (assignment, p_h), (int_intents, graph), handle in zip(hyps, graphs, handles):
+                trajs = handle.result()
                 rollouts.append(trajs)
                 own = np.array([[s.north, s.east] for s in trajs[self.own_id]])
                 s_h = 0.0

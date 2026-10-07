@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import bisect
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +44,7 @@ from src.planner_api.schema import (
     TrajectoryPoint,
     VesselStatus,
 )
+from src.prediction.parallel import resolve_workers
 from src.prediction.predictor import VesselPredictor
 from src.prediction.vo_rollout import VOAgentConfig
 from src.vessel.state import Intent, VesselState
@@ -114,7 +115,10 @@ def build_predictor(
     Same keys as the real-data configs (see scenarios/README.md):
     ``H``, ``nominal.{enabled, library_path, beta, r, max_candidates,
     heading_cone_deg}`` and ``interaction.{enabled, use_responding_filter,
-    top_k_hypotheses, reclassify_in_rollout, agent}``. ``library_path`` is
+    top_k_hypotheses, reclassify_in_rollout, parallel_workers, agent}``.
+    ``parallel_workers`` (int or "auto", default 0) gives the predictor a pool
+    of worker processes for its rollouts and for evaluate_manoeuvres();
+    "auto" uses CPU cores - 1. ``library_path`` is
     resolved against *root*. The nominal library needs ref_lat/ref_lon (the
     NED origin) to place queries in the library's UTM frame.
     """
@@ -148,6 +152,7 @@ def build_predictor(
         reclassify_in_rollout    = bool(interaction_cfg.get("reclassify_in_rollout", True)),
         nominal_retriever        = nominal_retriever,
         interaction_enabled      = interaction_cfg.get("enabled", True),
+        parallel_workers         = resolve_workers(interaction_cfg.get("parallel_workers", 0), None),
     )
     if nominal_retriever is not None:
         predictor.set_nominal_origin(ref_lat, ref_lon)
@@ -514,61 +519,104 @@ class PredictionService:
         speed_factor: float = 1.0,
         duration_s: float = 180.0,
         start_s: float = 0.0,
+        hypotheses: Iterable[int] | None = None,
     ) -> dict:
         """Predict the outcome if vessel_id starts a manoeuvre start_s from now.
 
         The vessel keeps its nominal course until start_s, alters course by
         course_change_deg (positive = starboard) and scales its speed by
         speed_factor for duration_s, then returns to its nominal course. Every other vessel reacts to it according to its
-        COLREGs role, under each hypothesis in the current snapshot.
+        COLREGs role, under each hypothesis in the current snapshot (or only
+        those whose rank is in *hypotheses*).
 
         Returns the closest approach to every other vessel per hypothesis,
-        and the worst case over all hypotheses.
+        and the worst case over the evaluated hypotheses.
+        """
+        return self.evaluate_manoeuvres(
+            vessel_id,
+            [dict(course_change_deg=course_change_deg, speed_factor=speed_factor,
+                  duration_s=duration_s, start_s=start_s)],
+            hypotheses=hypotheses,
+        )[0]
+
+    def evaluate_manoeuvres(
+        self,
+        vessel_id: str,
+        manoeuvres: Iterable[Mapping[str, float]],
+        hypotheses: Iterable[int] | None = None,
+    ) -> list[dict]:
+        """evaluate_manoeuvre() for several manoeuvres, in the same order.
+
+        Each manoeuvre is a mapping with any of course_change_deg,
+        speed_factor, duration_s and start_s. All rollouts are submitted
+        before any is collected, so they run in parallel when the predictor
+        has a worker pool (``parallel_workers``).
         """
         from src.planner_api.manoeuvres import Manoeuvre, velocity_plan
-
-        key = (vessel_id, float(course_change_deg), float(speed_factor), float(duration_s),
-               float(start_s))
-        if key in self._manoeuvre_cache:
-            return self._manoeuvre_cache[key]
 
         v = self._vessel(vessel_id)
         if not v.moving:
             raise ValueError(f"vessel '{vessel_id}' is not moving")
-        m = Manoeuvre("custom", course_change_deg, speed_factor, duration_s)
         p = self._predictor
-        plan = velocity_plan(p.nominal_velocity_sequence(vessel_id), m, p.dt, start_s)
+        ranks = None if hypotheses is None else frozenset(hypotheses)
+        hyps = [h for h in self.snapshot.hypotheses if ranks is None or h.rank in ranks]
+        nominal = None
 
-        per_hyp = []
-        worst: dict[str, dict] = {}
-        for h in self.snapshot.hypotheses:
-            assignment = {vid: Intent[a.upper()] for vid, a in h.assumptions.items()}
-            trajs = p.rollout_with_plans({vessel_id: plan}, assignment)
-            own = np.array([[s.north, s.east] for s in trajs[vessel_id]])
-            cpas = {}
-            for oid, tr in trajs.items():
-                if oid == vessel_id:
-                    continue
-                d = np.linalg.norm(own - np.array([[s.north, s.east] for s in tr]), axis=1)
-                k = int(np.argmin(d))
-                cpas[oid] = {"min_distance_m": round(float(d[k]), 1), "t_min_s": round(k * p.dt, 1)}
-                if oid not in worst or d[k] < worst[oid]["min_distance_m"]:
-                    worst[oid] = {**cpas[oid], "hypothesis_rank": h.rank}
-            per_hyp.append({
-                "hypothesis_rank": h.rank,
-                "probability": round(h.probability, 4),
-                "cpa": cpas,
-            })
+        # Submit every rollout not in the cache, then collect.
+        jobs = []
+        for spec in manoeuvres:
+            m = Manoeuvre("custom", float(spec.get("course_change_deg", 0.0)),
+                          float(spec.get("speed_factor", 1.0)), float(spec.get("duration_s", 180.0)))
+            start_s = float(spec.get("start_s", 0.0))
+            key = (vessel_id, m.course_change_deg, m.speed_factor, m.duration_s, start_s, ranks)
+            if key in self._manoeuvre_cache:
+                jobs.append((key, m, start_s, None))
+                continue
+            if nominal is None:
+                nominal = p.nominal_velocity_sequence(vessel_id)
+            plan = velocity_plan(nominal, m, p.dt, start_s)
+            handles = [
+                p.submit_rollout_with_plans(
+                    {vessel_id: plan}, {vid: Intent[a.upper()] for vid, a in h.assumptions.items()})
+                for h in hyps
+            ]
+            jobs.append((key, m, start_s, handles))
 
-        result = {
-            "vessel_id": vessel_id,
-            "manoeuvre": {**{k: v for k, v in m.to_dict().items() if k != "name"},
-                          "start_s": start_s},
-            "worst_case_cpa": worst,
-            "per_hypothesis": per_hyp,
-        }
-        self._manoeuvre_cache[key] = result
-        return result
+        results = []
+        for key, m, start_s, handles in jobs:
+            if handles is None:
+                results.append(self._manoeuvre_cache[key])
+                continue
+            per_hyp = []
+            worst: dict[str, dict] = {}
+            for h, handle in zip(hyps, handles):
+                trajs = handle.result()
+                own = np.array([[s.north, s.east] for s in trajs[vessel_id]])
+                cpas = {}
+                for oid, tr in trajs.items():
+                    if oid == vessel_id:
+                        continue
+                    d = np.linalg.norm(own - np.array([[s.north, s.east] for s in tr]), axis=1)
+                    k = int(np.argmin(d))
+                    cpas[oid] = {"min_distance_m": round(float(d[k]), 1), "t_min_s": round(k * p.dt, 1)}
+                    if oid not in worst or d[k] < worst[oid]["min_distance_m"]:
+                        worst[oid] = {**cpas[oid], "hypothesis_rank": h.rank}
+                per_hyp.append({
+                    "hypothesis_rank": h.rank,
+                    "probability": round(h.probability, 4),
+                    "cpa": cpas,
+                })
+
+            result = {
+                "vessel_id": vessel_id,
+                "manoeuvre": {**{k: v for k, v in m.to_dict().items() if k != "name"},
+                              "start_s": start_s},
+                "worst_case_cpa": worst,
+                "per_hypothesis": per_hyp,
+            }
+            self._manoeuvre_cache[key] = result
+            results.append(result)
+        return results
 
     # ------------------------------------------------------------------
     # Internals

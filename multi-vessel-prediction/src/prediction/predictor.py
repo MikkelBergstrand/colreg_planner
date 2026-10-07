@@ -597,6 +597,22 @@ class VesselPredictor:
     ) -> dict[str, list[VesselState]]:
         """Roll out the current situation with some vessels executing a fixed plan.
 
+        Blocking form of submit_rollout_with_plans(); same arguments.
+        """
+        return self.submit_rollout_with_plans(plans, assignment, n_steps).result()
+
+    def submit_rollout_with_plans(
+        self,
+        plans:      dict[str, np.ndarray],
+        assignment: dict[str, Intent],
+        n_steps:    int | None = None,
+    ) -> Pending:
+        """Roll out the current situation with some vessels executing a fixed plan.
+
+        Runs on the worker pool when there is one (parallel_workers > 0), so
+        many candidate plans can be submitted before collecting any; without
+        a pool it runs right away. result() gives the trajectories.
+
         Call after update() (and predict()) for the current step.
 
         Parameters
@@ -614,8 +630,9 @@ class VesselPredictor:
 
         Returns
         -------
-        dict[str, list[VesselState]]
-            Trajectories of all moving vessels, n_steps + 1 states each.
+        Pending
+            Its result() is the trajectories of all moving vessels,
+            n_steps + 1 states each.
         """
         moving = self._moving_states()
         missing = set(plans) - set(moving)
@@ -630,7 +647,8 @@ class VesselPredictor:
             for vid in moving
         }
         graph = self._current_nom_graph or ColregsGraph()
-        return vo_rollout(
+        return submit_rollout(
+            self._pool,
             initial_states     = moving,
             dt                 = self._dt,
             n_steps            = n_steps or self._H,

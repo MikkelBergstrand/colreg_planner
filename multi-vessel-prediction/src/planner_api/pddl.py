@@ -191,7 +191,9 @@ class ColregsPlanningProblem:
     vessels: dict[str, str]                   # pddl name -> vessel id
     facts: dict[str, list]                    # human-readable list of asserted facts and TILs
     latest_start: dict[tuple[str, str], float] = field(default_factory=dict)  # (manoeuvre, target) -> [s]
-    evaluations: dict[str, dict] = field(default_factory=dict)  # "<manoeuvre>@<delay>" -> evaluate_manoeuvre()
+    # "<manoeuvre>@<delay>" -> evaluate_manoeuvre(); delays after the one at
+    # which a manoeuvre has failed every fact are not evaluated.
+    evaluations: dict[str, dict] = field(default_factory=dict)
     targets_at_risk: list[str] = field(default_factory=list)
     _fluents: dict = field(default_factory=dict, repr=False)
 
@@ -410,51 +412,57 @@ def build_problem(
             assert_("risk", own, vobj[t])
             at_risk.append(t)
 
-    # Manoeuvre outcomes per start delay: worst case over the considered hypotheses
-    def worst_case(m: Manoeuvre, delay: float) -> tuple[dict[str, float], dict]:
-        ev = service.evaluate_manoeuvre(own_id, m.course_change_deg, m.speed_factor,
-                                        m.duration_s, start_s=delay)
-        worst: dict[str, float] = {}
-        for h in ev["per_hypothesis"]:
-            if h["hypothesis_rank"] in considered:
-                for oid, c in h["cpa"].items():
-                    worst[oid] = min(worst.get(oid, math.inf), c["min_distance_m"])
-        return worst, ev
-
+    # Manoeuvre outcomes per start delay: worst case over the considered
+    # hypotheses. Delays are evaluated in order, every manoeuvre still open at
+    # once (in parallel when the predictor has a worker pool). A manoeuvre's
+    # window and safe facts only use its run of passing delays from 0, so once
+    # safe and every pass have failed, its later delays are not evaluated.
     evaluations: dict[str, dict] = {}
     latest_start: dict[tuple[str, str], float] = {}
     resolvable: set[str] = set()
     best_now: dict[str, float] = {}
-    for m in manoeuvres:
-        mo = mobj[m.name]
+    passes: dict[str, dict[str, list[bool]]] = {m.name: {} for m in manoeuvres}
+    safe: dict[str, list[bool]] = {m.name: [] for m in manoeuvres}
+    open_ = list(manoeuvres)
+    for d in delays:
         # Holding course is the same whenever it "starts".
-        m_delays = [0.0] if m.keeps_course_and_speed else delays
-        passes: dict[str, list[bool]] = {}
-        safe: list[bool] = []
-        for d in m_delays:
-            worst, ev = worst_case(m, d)
+        batch = [m for m in open_ if d == 0.0 or not m.keeps_course_and_speed]
+        if not batch:
+            break
+        evs = service.evaluate_manoeuvres(
+            own_id,
+            [dict(course_change_deg=m.course_change_deg, speed_factor=m.speed_factor,
+                  duration_s=m.duration_s, start_s=d) for m in batch],
+            hypotheses=considered,
+        )
+        for m, ev in zip(batch, evs):
             evaluations[f"{m.name}@{d:g}"] = ev
-            safe.append(min(worst.values(), default=math.inf) >= d_min)
+            worst = {oid: c["min_distance_m"] for oid, c in ev["worst_case_cpa"].items()}
+            safe[m.name].append(min(worst.values(), default=math.inf) >= d_min)
             for oid, dist in worst.items():
-                passes.setdefault(oid, []).append(dist >= d_pass)
+                passes[m.name].setdefault(oid, []).append(dist >= d_pass)
             if d == 0.0:
                 best_now[m.name] = min(worst.values(), default=math.inf)
+        open_ = [m for m in batch
+                 if all(safe[m.name]) or any(all(ok) for ok in passes[m.name].values())]
 
-        def last_passing(ok: list[bool]) -> float | None:
-            """Latest delay of the run of passing delays from 0 (None: fails now)."""
-            last = None
-            for d, good in zip(m_delays, ok):
-                if not good:
-                    break
-                last = d
-            return last
+    def last_passing(ok: list[bool]) -> float | None:
+        """Latest delay of the run of passing delays from 0 (None: fails now)."""
+        last = None
+        for d, good in zip(delays, ok):
+            if not good:
+                break
+            last = d
+        return last
 
-        last_safe = last_passing(safe)
+    for m in manoeuvres:
+        mo = mobj[m.name]
+        last_safe = last_passing(safe[m.name])
         if last_safe is not None:
             assert_("safe", mo, own)
             if not m.keeps_course_and_speed:
                 til(last_safe + 1, False, "safe", mo, own)
-        for oid, ok in passes.items():
+        for oid, ok in passes[m.name].items():
             last = last_passing(ok)
             if last is None or oid not in vobj:
                 continue

@@ -242,6 +242,13 @@ rollouts of different frames in parallel, so it gains even with
 per hypothesis live, all CPU cores but one for `--metrics`; it is the default
 in both config types. Use 0 (serial) when debugging the rollout.
 
+The planners use the same mechanism. A `search_dp` own ship in the simulation
+gets a pool sized by `prediction.parallel_workers` (`auto`: one worker per
+plan rollout, at most CPU cores − 1), and `PredictionService.evaluate_manoeuvres`
+/ `build_problem` run on the predictor's pool when the service config sets
+`interaction.parallel_workers` (default 0 there). Plans and PDDL facts are the
+same either way.
+
 ## Planner API
 
 `src/planner_api` wraps the predictor for use as an information source inside

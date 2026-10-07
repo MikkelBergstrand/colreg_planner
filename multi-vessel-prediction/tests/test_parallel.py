@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from src.colregs_graph.colregs_classifier import ColregsClassifier
 from src.prediction.parallel import RolloutPool, resolve_workers, submit_rollout
 from src.prediction.vo_rollout import VOAgentConfig, enumerate_and_rollout
@@ -90,8 +92,73 @@ def test_resolve_workers():
         raise AssertionError("expected ValueError for a negative worker count")
 
 
+def test_search_planner_pool_matches_serial():
+    from tests.test_manoeuvre_search import _planner
+    planner, states, graph, config = _planner()
+    clf = ColregsClassifier(**config.classifier)
+    probs = {"target_1": 0.7}
+
+    def ranked():
+        planner._active = None          # no action under way, so no switch cost
+        return planner.plan(states, graph, t=0.0, responding_probs=probs, classifier=clf)
+
+    serial = ranked()
+    with RolloutPool(n_workers=4) as pool:
+        planner.pool = pool
+        parallel = ranked()
+    # Same trajectories and ranking; costs may differ in the last bit, since
+    # pooled rollouts come back as Python floats rather than numpy scalars.
+    assert [_flat(t) for t in serial.rollouts] == [_flat(t) for t in parallel.rollouts]
+    assert [p.actions for p in serial.ranked] == [p.actions for p in parallel.ranked]
+    for s, p in zip(serial.ranked, parallel.ranked):
+        assert s.min_dist == p.min_dist
+        assert p.cost == pytest.approx(s.cost, rel=1e-12)
+
+
+def _service(parallel_workers):
+    from src.planner_api import PredictionService
+    service = PredictionService.from_config(
+        {"H": 60, "interaction": {"use_responding_filter": True, "top_k_hypotheses": 4,
+                                  "parallel_workers": parallel_workers,
+                                  "agent": {"d_pass": 150.0}}},
+        dt=2.0, own_id="ego",
+    )
+    obs = {"ego":    {"north": 0.0,    "east": 0.0,    "course_deg": 0.0,   "speed": 5.0},
+           "target": {"north": 1000.0, "east": 1000.0, "course_deg": 270.0, "speed": 5.0}}
+    service.step(obs, t=0.0)
+    return service
+
+
+_SPECS = [dict(course_change_deg=c, start_s=d) for c in (0.0, 30.0, -30.0) for d in (0.0, 30.0)]
+
+
+def test_evaluate_manoeuvres_pool_matches_serial():
+    serial = _service(0).evaluate_manoeuvres("ego", _SPECS)
+    service = _service(2)
+    try:
+        assert service.evaluate_manoeuvres("ego", _SPECS) == serial
+    finally:
+        service.predictor._pool.shutdown()
+    single = _service(0).evaluate_manoeuvre("ego", 30.0, start_s=30.0)
+    assert single == serial[3]
+
+
+def test_evaluate_manoeuvres_hypothesis_filter():
+    service = _service(0)
+    ranks = [h.rank for h in service.snapshot.hypotheses]
+    assert len(ranks) > 1
+    full = service.evaluate_manoeuvres("ego", _SPECS)
+    only = service.evaluate_manoeuvres("ego", _SPECS, hypotheses=[ranks[0]])
+    for f, o in zip(full, only):
+        assert [h["hypothesis_rank"] for h in o["per_hypothesis"]] == [ranks[0]]
+        assert o["per_hypothesis"][0] == f["per_hypothesis"][0]
+
+
 if __name__ == "__main__":
     test_resolve_workers()
     test_parallel_matches_serial()
     test_rollout_error_propagates_from_worker()
+    test_search_planner_pool_matches_serial()
+    test_evaluate_manoeuvres_pool_matches_serial()
+    test_evaluate_manoeuvres_hypothesis_filter()
     print("ok")

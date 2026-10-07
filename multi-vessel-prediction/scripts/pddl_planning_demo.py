@@ -59,6 +59,7 @@ def main() -> None:
             "interaction": {
                 "use_responding_filter": True,
                 "top_k_hypotheses": 4,
+                "parallel_workers": "auto",           # manoeuvre evaluations in parallel
                 "agent": {"d_pass": 150.0, "tcpa_threshold": 600.0},
             },
         },

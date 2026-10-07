@@ -111,6 +111,19 @@ def _dp_own_intent_probs(config: ScenarioConfig, vessel_cfgs: dict[str, dict]) -
     }
 
 
+_SEARCH_POOLS: dict[int, RolloutPool] = {}
+
+
+def _search_pool(n_workers: int) -> Optional[RolloutPool]:
+    """Worker pool for search_dp planners, started once and shared by every
+    search vessel and run in this process (None: plan serially)."""
+    if n_workers < 1:
+        return None
+    if n_workers not in _SEARCH_POOLS:
+        _SEARCH_POOLS[n_workers] = RolloutPool(n_workers)
+    return _SEARCH_POOLS[n_workers]
+
+
 def _search_config(vcfg: dict) -> SearchConfig:
     """SearchConfig from a vessel's optional `search:` block (scalar fields only)."""
     raw = dict(vcfg.get("search") or {})
@@ -176,12 +189,20 @@ def _build_policy(
             )
             for v in config.vessels
         }
+        search_cfg = _search_config(vcfg)
+        # prediction.parallel_workers also sizes the planner's pool: "auto"
+        # gives one worker per plan rollout, at most CPU cores - 1.
+        n_workers = resolve_workers(
+            pred_cfg.parallel_workers if pred_cfg else 0,
+            max_parallel=len(search_cfg.actions) ** search_cfg.depth * search_cfg.top_k,
+        )
         planner = ManoeuvreSearchPlanner(
             own_id           = vi.vessel_id,
             agent_configs    = agent_configs,
             vessel_index_map = {v.vessel_id: i for i, v in enumerate(config.vessels)},
             own_intent       = vi.intent,
-            config           = _search_config(vcfg),
+            config           = search_cfg,
+            pool             = _search_pool(n_workers),
         )
         return SearchDPPolicy(dt=config.dt, planner=planner,
                               replan_s=float(vcfg.get("replan_s", 5.0)))
