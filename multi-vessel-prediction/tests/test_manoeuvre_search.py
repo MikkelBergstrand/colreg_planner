@@ -568,3 +568,34 @@ def test_head_on_cost_lapses_once_the_route_course_passes_clear():
     dcpa, tcpa = _compute_dcpa_tcpa(clear["ego"], clear["target_1"])
     assert dcpa >= d_pass and tcpa > 0
     assert hold_colregs(clear) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Crossing ahead of a vessel (Rule 15)
+# ---------------------------------------------------------------------------
+
+def _crossing_tracks(along_at_crossing, n=21):
+    """Other vessel at the origin heading north (holding position, under way);
+    the own ship crosses its heading line west to east, along_at_crossing
+    metres ahead of it (negative: astern)."""
+    other = [VesselState(north=0.0, east=0.0, psi=0.0, speed=1.0) for _ in range(n)]
+    own = np.array([[along_at_crossing, -50.0 + 5.0 * k] for k in range(n)])
+    return own, other
+
+
+def test_bow_crossing_shortfall():
+    planner, *_ = _planner()
+    d_pass = 30.0
+    f = planner.cfg.weights.bow_factor
+    own, other = _crossing_tracks(20.0)
+    assert planner._bow_crossing_shortfall(own, other, d_pass) == pytest.approx(
+        (f * d_pass - 20.0) / (f * d_pass))
+    own, other = _crossing_tracks(f * d_pass + 5.0)              # far enough ahead
+    assert planner._bow_crossing_shortfall(own, other, d_pass) == 0.0
+    own, other = _crossing_tracks(-20.0)                         # astern: no requirement
+    assert planner._bow_crossing_shortfall(own, other, d_pass) == 0.0
+    parallel = np.array([[5.0 * k, 40.0] for k in range(21)])    # never crosses its track
+    assert planner._bow_crossing_shortfall(parallel, other, d_pass) == 0.0
+    planner.cfg.weights.bow_factor = 1.0                         # never adds to d_pass
+    own, other = _crossing_tracks(20.0)
+    assert planner._bow_crossing_shortfall(own, other, d_pass) == 0.0

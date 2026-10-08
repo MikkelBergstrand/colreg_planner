@@ -16,8 +16,9 @@ is the optimum over the action set; no heuristic or pruning is involved.
 
 Cost of a plan, per hypothesis h with renormalised weight w_h:
 
-    safety_h   = sum_j  w_safe * (max(0, d_pass - d_j) / d_pass)^2
-                       + w_coll * [d_j < d_coll]
+    safety_h   = sum_j  w_safe * max(short_j, bow_j)^2 + w_coll * [d_j < d_coll]
+      short_j  = max(0, d_pass - d_j) / d_pass
+      bow_j    = max(0, B - bcr_j) / B,   B = bow_factor * d_pass
     colregs_h  = w_port     * [any port offset while give-way/head-on to a vessel]
                + w_give_way * [first edge does not alter to starboard while
                                head-on to a vessel it is in conflict with
@@ -72,6 +73,16 @@ both terms, holding course is the cheaper violation (w_give_way <
 w_stand_on), and the search postpones the give-way manoeuvre to "the next
 edge" at every replan. The safety and port terms still keep the manoeuvre
 clear of the stand-on vessel.
+
+d_j is the closest approach to vessel j over the rollout. Crossing ahead of a
+vessel needs more room than passing astern of it (Rule 15: the give-way
+vessel avoids crossing ahead). bcr_j, the bow crossing range, is how far
+ahead of vessel j the own ship is when it crosses j's heading line, at the
+nearest such crossing in the rollout; without a crossing ahead, bow_j is 0.
+It is about crossing the track, not about being ahead of the bow: in a
+head-on approach each ship is ahead of the other's bow throughout, without
+crossing ahead. The distance at a crossing is at least d_j, so with
+bow_factor = 1 the bow term never adds anything.
 
 The worst case only ranges over hypotheses with weight >= risk_floor. Over
 all of them, a 1 % "the give-way vessel never acts" hypothesis would carry a
@@ -140,6 +151,7 @@ DEFAULT_ACTIONS: tuple[SearchAction, ...] = (
 @dataclass
 class SearchWeights:
     w_safe:      float = 100.0
+    bow_factor:  float = 2.0    # required range when crossing ahead of a vessel, in d_pass
     w_coll:      float = 1000.0
     w_port:      float = 20.0
     w_give_way:  float = 5.0
@@ -240,6 +252,32 @@ class ManoeuvreSearchPlanner:
 
     def _sequences(self) -> list[tuple[SearchAction, ...]]:
         return list(itertools.product(self.cfg.actions, repeat=self.cfg.depth))
+
+    def _bow_crossing_shortfall(self, own: np.ndarray, other: list[VesselState],
+                                d_pass: float) -> float:
+        """Shortfall of the bow crossing range from bow_factor * d_pass, as a
+        fraction of it: the own ship (positions *own*) crossing *other*'s
+        heading line ahead of it. 0 without such a crossing."""
+        f = self.cfg.weights.bow_factor
+        if f <= 1.0:
+            return 0.0
+        psi = np.array([s.psi for s in other])
+        rel_n = own[:, 0] - np.array([s.north for s in other])
+        rel_e = own[:, 1] - np.array([s.east for s in other])
+        along = rel_n * np.cos(psi) + rel_e * np.sin(psi)       # ahead of the other vessel
+        lateral = rel_e * np.cos(psi) - rel_n * np.sin(psi)     # to its starboard
+        under_way = np.array([s.speed for s in other])[:-1] >= 0.1
+        side = lateral >= 0.0          # a sample exactly on the line counts as starboard
+        cross = np.nonzero((side[:-1] != side[1:]) & under_way)[0]
+        if cross.size == 0:
+            return 0.0
+        frac = lateral[cross] / (lateral[cross] - lateral[cross + 1])
+        at = along[cross] + frac * (along[cross + 1] - along[cross])
+        ahead = at[at > 0.0]
+        if ahead.size == 0:
+            return 0.0
+        required = f * d_pass
+        return max(0.0, (required - float(ahead.min())) / required)
 
     def _committed_action(self, t: float) -> Optional[SearchAction]:
         """The action under way if it started less than edge_s before t."""
@@ -369,15 +407,19 @@ class ManoeuvreSearchPlanner:
                 own = np.array([[s.north, s.east] for s in trajs[self.own_id]])
                 s_h = 0.0
                 for vid in others:
+                    tr = trajs[vid]
                     d = float(np.min(np.linalg.norm(
-                        own - np.array([[s.north, s.east] for s in trajs[vid]]), axis=1)))
+                        own - np.array([[s.north, s.east] for s in tr]), axis=1)))
+                    shortfall = (d_pass - d) / d_pass
                     if vid in overtaken:
                         d_ext, t_ext = _compute_dcpa_tcpa(trajs[self.own_id][-1], trajs[vid][-1])
                         if t_ext > 0:
                             d = min(d, d_ext)
+                            shortfall = max(shortfall, (d_pass - d_ext) / d_pass)
                     worst_d[vid] = min(worst_d[vid], d)
                     if vid not in overtaken_far:
-                        s_h += w.w_safe * (max(0.0, d_pass - d) / d_pass) ** 2
+                        shortfall = max(shortfall, self._bow_crossing_shortfall(own, tr, d_pass))
+                        s_h += w.w_safe * max(0.0, shortfall) ** 2
                     s_h += w.w_coll * (d < d_coll)
                 safety.append(s_h)
 

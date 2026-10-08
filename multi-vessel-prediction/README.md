@@ -137,7 +137,8 @@ on the vessel's `policy`:
   stop},
   each rolled out with the prediction model while the other vessels react to
   it, under the top-2 responsiveness hypotheses. The cost weighs passing
-  distance (expected, and worst case over the hypotheses with at least 10 %
+  distance (with `bow_factor` × `d_pass`, default 2, required when crossing
+  ahead of a vessel; expected, and worst case over the hypotheses with at least 10 %
   probability, so a stand-on own ship holds course until the filter actually
   doubts the give-way vessel), COLREGs (starboard
   in head-on and act early when giving way, both while the route course would
