@@ -20,9 +20,10 @@ Cost of a plan, per hypothesis h with renormalised weight w_h:
                        + w_coll * [d_j < d_coll]
     colregs_h  = w_port     * [any port offset while give-way/head-on to a vessel]
                + w_give_way * [first edge does not alter to starboard while
-                               head-on to a vessel (Rule 14), or keeps course
-                               and speed while give-way to a vessel it is in
-                               conflict with (Rule 16: act early)]
+                               head-on to a vessel it is in conflict with
+                               (Rule 14), or keeps course and speed while
+                               give-way to a vessel it is in conflict with
+                               (Rule 16: act early)]
                + w_stand_on * [manoeuvre on the first edge while stand-on to a
                                vessel that is responsive under h, and not
                                bound to keep clear of any vessel]   (Rule 17(a)(i))
@@ -55,14 +56,16 @@ it reappears, a port turn back toward the route also escapes the
 alter-course term while costing less deviation, so the ship wiggles back
 and forth while overtaking.
 
-A give-way vessel is in conflict while resuming the route course from the
-current position would pass it inside the give-way passing distance
+A give-way or head-on vessel is in conflict while resuming the route course
+from the current position would pass it inside that role's passing distance
 (d_pass_roles, else d_pass). Once the manoeuvre has opened that distance,
 holding course is no longer penalised. Otherwise the own ship keeps
-"acting", for instance slowing down, until every give-way vessel is past.
+"acting", for instance slowing down, until every such vessel is past. The
+ban on port turns toward a give-way or head-on vessel still holds for the
+whole encounter.
 
 The stand-on term lapses while the own ship must keep clear of another
-approaching vessel (a give-way conflict, head-on, or an overtaking conflict). Rule 17's
+approaching vessel (a give-way, head-on or overtaking conflict). Rule 17's
 duty to keep course and speed holds toward the vessel that keeps clear; it
 cannot oblige a ship to stand on into a vessel it must itself avoid. With
 both terms, holding course is the cheaper violation (w_give_way <
@@ -300,13 +303,14 @@ class ManoeuvreSearchPlanner:
         }
         own_now = states[self.own_id]
         on_route = VesselState(own_now.north, own_now.east, own_cfg.nominal_psi, own_cfg.ref_speed)
-        # Give-way encounters still to resolve: resuming the route course from
-        # here would pass inside the give-way passing distance.
-        d_give_way = own_cfg.d_pass_roles.give_way if own_cfg.d_pass_roles else d_pass
-        give_way_conflict = {
-            vid for vid in approaching
-            if _compute_dcpa_tcpa(on_route, states[vid])[0] < d_give_way
-        }
+        # Give-way and head-on encounters still to resolve: resuming the route
+        # course from here would pass inside that role's passing distance.
+        roles_d = own_cfg.d_pass_roles
+        d_give_way = roles_d.give_way if roles_d else d_pass
+        d_head_on = roles_d.head_on if roles_d else d_pass
+        route_dcpa = {vid: _compute_dcpa_tcpa(on_route, states[vid])[0] for vid in approaching}
+        give_way_conflict = {vid for vid, d in route_dcpa.items() if d < d_give_way}
+        head_on_conflict = {vid for vid, d in route_dcpa.items() if d < d_head_on}
         # Vessels the own ship is overtaking (Rule 13), within the predictor's
         # TCPA threshold on the route course. The duty to keep clear does not
         # depend on whether the other vessel responds, so this uses the
@@ -386,9 +390,11 @@ class ManoeuvreSearchPlanner:
                 give_way = VesselRole.GIVE_WAY in roles.values()
                 give_way_open = any(r == VesselRole.GIVE_WAY and vid in give_way_conflict
                                     for vid, r in roles.items())
+                head_on_open = any(r == VesselRole.HEAD_ON and vid in head_on_conflict
+                                   for vid, r in roles.items())
                 if (head_on or give_way) and any(a.course_offset < 0 for a in actions):
                     c_h += w.w_port
-                if ((head_on and actions[0].course_offset <= 0)
+                if ((head_on_open and actions[0].course_offset <= 0)
                         or (give_way_open and actions[0].is_nominal)):
                     c_h += w.w_give_way
                 if overtake_conflict and not any(
@@ -400,7 +406,7 @@ class ManoeuvreSearchPlanner:
                        for a in actions for side in overtake_side.values()):
                     c_h += w.w_port
                 # Stand on only when not bound to keep clear of another vessel.
-                if not (head_on or give_way_open or overtake_conflict) and not actions[0].is_nominal and any(
+                if not (head_on_open or give_way_open or overtake_conflict) and not actions[0].is_nominal and any(
                     r == VesselRole.STAND_ON and assignment.get(vid) == Intent.RESPONSIVE
                     for vid, r in roles.items()
                 ):

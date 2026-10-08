@@ -136,8 +136,8 @@ on the vessel's `policy`:
   distance (expected, and worst case over the hypotheses with at least 10 %
   probability, so a stand-on own ship holds course until the filter actually
   doubts the give-way vessel), COLREGs (starboard
-  in head-on, act early when giving way while the route course would still
-  pass inside `d_pass`, hold when standing on unless bound
+  in head-on and act early when giving way, both while the route course would
+  still pass inside `d_pass`, hold when standing on unless bound
   to keep clear of another vessel, no port turns
   toward a give-way encounter, alter course early when overtaking), deviation
   from the route, manoeuvre effort,

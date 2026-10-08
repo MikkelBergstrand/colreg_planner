@@ -519,3 +519,25 @@ def test_give_way_cost_lapses_once_the_route_course_passes_clear():
         dcpa, tcpa = _compute_dcpa_tcpa(clear["ego"], clear[vid])
         assert dcpa >= d_pass and tcpa > 0
     assert hold_colregs(clear) == 0.0
+
+
+def test_head_on_cost_lapses_once_the_route_course_passes_clear():
+    """Not turning to starboard while head-on is only penalised while
+    resuming the route course would pass inside d_pass of the vessel."""
+    from src.colregs_graph.colregs_classifier import _compute_dcpa_tcpa
+    planner, states, graph, _ = _planner()
+    assert dict(graph.get_roles(0)) == {1: VesselRole.HEAD_ON}
+    d_pass = planner.configs["ego"].d_pass
+    nominal = next(a for a in DEFAULT_ACTIONS if a.is_nominal)
+
+    def hold_colregs(st):
+        planner._active = None
+        r = planner.plan(st, graph, t=0.0)
+        return next(p for p in r.ranked if p.actions == (nominal, nominal)).terms["colregs"]
+
+    assert hold_colregs(states) == planner.cfg.weights.w_give_way
+    # Same role (graph unchanged), but the oncoming vessel now passes well clear.
+    clear = {**states, "target_1": replace(states["target_1"], east=states["target_1"].east + 2 * d_pass)}
+    dcpa, tcpa = _compute_dcpa_tcpa(clear["ego"], clear["target_1"])
+    assert dcpa >= d_pass and tcpa > 0
+    assert hold_colregs(clear) == 0.0
