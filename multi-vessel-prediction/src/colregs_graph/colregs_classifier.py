@@ -201,6 +201,14 @@ class ColregsClassifier:
         Number of consecutive diverging+beyond-d_u steps required before
         an active scenario is cleared. Prevents noisy velocity from
         flickering the tcpa sign and resetting the scenario prematurely.
+
+    A confirmed overtaking encounter is held until the overtaking vessel is
+    past the overtaken vessel's beam (COLREGs Rule 13(d): a later change of
+    bearing does not end the duty to keep clear, or turn the encounter into a
+    crossing, until she is finally past and clear). Until then it is neither
+    cleared nor reclassified, unless the vessels are more than d_a apart.
+    Without this, an overtaking vessel that turns away hard makes the TCPA
+    go negative and loses the encounter mid-overtake.
     """
 
     dcpa_max:    float = 1500.0
@@ -276,6 +284,7 @@ class ColregsClassifier:
             tcpa = -(dn * dvn + de * dve) / speed_sq
             dcpa = math.hypot(dn + tcpa * dvn, de + tcpa * dve)
         approaching = tcpa > 0
+        overtaking = self._overtaking_in_progress(a, b, dn, de, dist, ps)
 
         # --- Hysteresis: clear active scenario if vessels are separating,
         #     beyond the discard distance, AND the backward-projected CPA also
@@ -284,7 +293,7 @@ class ColregsClassifier:
         #     current-velocity TCPA go negative mid-encounter while the vessels
         #     haven't yet physically separated beyond d_u.
         if ps.active_scenario is not None:
-            if dist > self.d_u and not approaching and dcpa > self.d_u:
+            if dist > self.d_u and not approaching and dcpa > self.d_u and not overtaking:
                 ps.clear_count += 1
                 if ps.clear_count >= self.n_clear:
                     ps.active_scenario  = None
@@ -292,6 +301,11 @@ class ColregsClassifier:
                     ps.clear_count      = 0
             else:
                 ps.clear_count = 0
+
+        # --- Overtaking: hold the encounter as it is until the overtaking
+        #     vessel is past (Rule 13(d)); bearing changes do not reclassify it.
+        if overtaking:
+            return self._active_edge(id_a, id_b, ps)
 
         # --- DCPA gate: suppress new encounter detection when projected CPA is
         #     very large, but always preserve the already-active edge so the
@@ -311,6 +325,23 @@ class ColregsClassifier:
         # --- Hysteresis update
         self._update_hysteresis(ps, scenario)
         return self._active_edge(id_a, id_b, ps)
+
+    def _overtaking_in_progress(
+        self, a: VesselState, b: VesselState, dn: float, de: float, dist: float,
+        ps: _PairState,
+    ) -> bool:
+        """True while a confirmed overtaking encounter is not yet past: the
+        overtaking vessel is still abaft the overtaken vessel's beam, and the
+        vessels are within d_a. (dn, de) is b's position relative to a."""
+        if dist > self.d_a or ps.hysteresis_score < self.w_reinforce:
+            return False
+        if ps.active_scenario == EncounterType.OVERTAKING_AHEAD:      # a overtakes b
+            along = -(dn * math.cos(b.psi) + de * math.sin(b.psi))
+        elif ps.active_scenario == EncounterType.OVERTAKING_ASTERN:   # b overtakes a
+            along = dn * math.cos(a.psi) + de * math.sin(a.psi)
+        else:
+            return False
+        return along < 0.0
 
     def _active_edge(
         self, id_a: int, id_b: int, ps: _PairState

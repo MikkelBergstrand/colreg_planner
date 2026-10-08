@@ -20,6 +20,8 @@ from src.vessel.state import VesselState
 from src.colregs_graph.colregs_classifier import (
     ColregsClassifier, _REGIONS, _PRIORITY, _geometric_classify,
 )
+from src.colregs_graph.colregs_graph import VesselRole
+from src.vessel.encounter import EncounterType
 
 
 # ---------------------------------------------------------------------------
@@ -65,8 +67,9 @@ class _ReferenceClassifier(ColregsClassifier):
         dcpa, tcpa  = _ref_dcpa_tcpa(a, b)
         dist        = float(np.linalg.norm(a.position - b.position))
         approaching = tcpa > 0
+        overtaking  = self._ref_overtaking(a, b, dist, ps)
         if ps.active_scenario is not None:
-            if dist > self.d_u and not approaching and dcpa > self.d_u:
+            if dist > self.d_u and not approaching and dcpa > self.d_u and not overtaking:
                 ps.clear_count += 1
                 if ps.clear_count >= self.n_clear:
                     ps.active_scenario  = None
@@ -74,6 +77,8 @@ class _ReferenceClassifier(ColregsClassifier):
                     ps.clear_count      = 0
             else:
                 ps.clear_count = 0
+        if overtaking:
+            return self._active_edge(id_a, id_b, ps)
         if dcpa > self.dcpa_max:
             return self._active_edge(id_a, id_b, ps)
         if dist > self.d_a or not approaching:
@@ -83,6 +88,19 @@ class _ReferenceClassifier(ColregsClassifier):
             return self._active_edge(id_a, id_b, ps)
         self._update_hysteresis(ps, scenario)
         return self._active_edge(id_a, id_b, ps)
+
+    def _ref_overtaking(self, a, b, dist, ps):
+        # Confirmed overtaking, within d_a, overtaking vessel abaft the beam.
+        if dist > self.d_a or ps.hysteresis_score < self.w_reinforce:
+            return False
+        if ps.active_scenario == EncounterType.OVERTAKING_AHEAD:
+            overtaker, overtaken = a, b
+        elif ps.active_scenario == EncounterType.OVERTAKING_ASTERN:
+            overtaker, overtaken = b, a
+        else:
+            return False
+        heading = np.array([math.cos(overtaken.psi), math.sin(overtaken.psi)])
+        return float(np.dot(overtaker.position - overtaken.position, heading)) < 0.0
 
     def _ref_temporal(self, a, b, tcpa):
         if not math.isfinite(tcpa) or tcpa <= 0:
@@ -165,7 +183,58 @@ def test_classifier_matches_reference_over_sequences():
     assert n_edges > 1000
 
 
+
+# ---------------------------------------------------------------------------
+# Overtaking is held until the overtaking vessel is past (Rule 13(d))
+# ---------------------------------------------------------------------------
+
+def _overtaking_classifier():
+    """Own ship (0) overtaking a slower vessel (1) 300 m dead ahead, confirmed."""
+    clf = ColregsClassifier(d_u=45.0, dcpa_max=450.0, d_a=3000.0)
+    target = VesselState(north=300.0, east=0.0, psi=0.0, speed=1.0)
+    own = VesselState(north=0.0, east=0.0, psi=0.0, speed=2.0)
+    for _ in range(2):
+        g = clf.update({0: own, 1: target})
+    assert dict(g.get_roles(0)) == {1: VesselRole.OVERTAKING}
+    return clf, target
+
+
+def test_overtaking_held_through_a_hard_turn_away():
+    clf, target = _overtaking_classifier()
+    # Turned hard to starboard: diverging, beyond d_u, CPA beyond d_u, but
+    # still astern of the target's beam. The old rule cleared it here.
+    own = VesselState(north=0.0, east=400.0, psi=math.pi / 2, speed=2.0)
+    for _ in range(3 * clf.n_clear):
+        g = clf.update({0: own, 1: target})
+    assert dict(g.get_roles(0)) == {1: VesselRole.OVERTAKING}
+
+
+def test_overtaking_not_reclassified_while_astern():
+    clf, target = _overtaking_classifier()
+    # Approaching from the target's port quarter on a course a fresh
+    # classifier calls CROSSING_STARBOARD: without the hold, hysteresis would
+    # switch the encounter to a crossing.
+    own = VesselState(north=250.0, east=-150.0, psi=math.pi / 2, speed=2.0)
+    fresh = ColregsClassifier(d_u=45.0, dcpa_max=450.0, d_a=3000.0).update({0: own, 1: target})
+    assert [e.encounter_type for e in fresh.edges] == [EncounterType.CROSSING_STARBOARD]
+    for _ in range(int(2 / clf.w_forget)):
+        g = clf.update({0: own, 1: target})
+    assert dict(g.get_roles(0)) == {1: VesselRole.OVERTAKING}
+
+
+def test_overtaking_released_once_past_and_clear():
+    clf, target = _overtaking_classifier()
+    # Ahead of the target's beam, diverging, beyond d_u.
+    own = VesselState(north=400.0, east=400.0, psi=math.pi / 2, speed=2.0)
+    for _ in range(clf.n_clear):
+        g = clf.update({0: own, 1: target})
+    assert g.get_roles(0) == []
+
+
 if __name__ == "__main__":
     test_lookup_table_matches_region_rectangles()
     test_classifier_matches_reference_over_sequences()
+    test_overtaking_held_through_a_hard_turn_away()
+    test_overtaking_not_reclassified_while_astern()
+    test_overtaking_released_once_past_and_clear()
     print("ok")
