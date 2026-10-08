@@ -17,15 +17,21 @@ import pandas as pd
 _COG_UNAVAILABLE = 360.0
 _HDG_UNAVAILABLE = 511
 _ROT_UNAVAILABLE = -128
-_LAT_MIN, _LAT_MAX = 59.0, 59.95
-_LON_MIN, _LON_MAX = 10.2, 10.85
+# Default area (lat_min, lat_max, lon_min, lon_max): the Oslofjord study area.
+DEFAULT_BOUNDS: tuple[float, float, float, float] = (59.0, 59.95, 10.2, 10.85)
 
 
 # ---------------------------------------------------------------------------
 # Load & clean one daily parquet file
 # ---------------------------------------------------------------------------
 
-def load_and_clean(path: Path) -> pd.DataFrame:
+def load_and_clean(
+    path: Path,
+    bounds: tuple[float, float, float, float] = DEFAULT_BOUNDS,
+) -> pd.DataFrame:
+    """Load one daily parquet file, keeping valid rows inside *bounds*
+    (lat_min, lat_max, lon_min, lon_max) [deg]."""
+    lat_min, lat_max, lon_min, lon_max = bounds
     df = pd.read_parquet(path)
     df["sog"] = pd.to_numeric(df["speed_over_ground"], errors="coerce")
     df["cog"] = pd.to_numeric(df["course_over_ground"], errors="coerce")
@@ -39,8 +45,8 @@ def load_and_clean(path: Path) -> pd.DataFrame:
         df["timestamp"] = df["timestamp"].dt.tz_localize(None)
     mmsi = df["mmsi"].astype(int)
     df = df[(mmsi >= 100_000_000) & (mmsi <= 999_999_999)].copy()
-    df = df[df["latitude"].between(_LAT_MIN, _LAT_MAX) &
-            df["longitude"].between(_LON_MIN, _LON_MAX)].copy()
+    df = df[df["latitude"].between(lat_min, lat_max) &
+            df["longitude"].between(lon_min, lon_max)].copy()
     df = df[df["sog"].between(0.0, 50.0)].copy()
     df.sort_values("timestamp", inplace=True)
     df.drop_duplicates(subset=["mmsi", "timestamp"], keep="first", inplace=True)

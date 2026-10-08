@@ -16,7 +16,7 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from src.ais.cleaning import load_and_clean, resample_track
+from src.ais.cleaning import DEFAULT_BOUNDS, load_and_clean, resample_track
 from src.nominal.library import LibraryConfig, TrackLibrary
 
 
@@ -34,7 +34,8 @@ class TrackIndexer:
     min_segment_obs : int
         Minimum raw AIS observations required to keep a segment.
     geo_bounds : (lat_min, lat_max, lon_min, lon_max)
-        Geographic filter applied during parquet loading.
+        Geographic filter applied during parquet loading: AIS reports outside
+        it are dropped before resampling [deg].
     """
 
     def __init__(
@@ -43,7 +44,7 @@ class TrackIndexer:
         min_sog_knots: float = 1.5,
         gap_threshold_s: float = 600.0,
         min_segment_obs: int = 6,
-        geo_bounds: tuple[float, float, float, float] = (59.0, 59.95, 10.2, 10.85),
+        geo_bounds: tuple[float, float, float, float] = DEFAULT_BOUNDS,
     ) -> None:
         self._config = config
         self._min_sog_ms = min_sog_knots * 0.5144
@@ -63,7 +64,7 @@ class TrackIndexer:
         """Process parquet files and return a populated TrackLibrary.
 
         Steps per file:
-          1. Load and clean (same filters as src.ais.cleaning.load_and_clean)
+          1. Load and clean (src.ais.cleaning.load_and_clean, within geo_bounds)
           2. Resample each MMSI to uniform dt (linear lat/lon/sog; circular COG)
           3. Segment at gaps > gap_threshold_s
           4. Convert lat/lon → absolute UTM-32N via pyproj
@@ -86,7 +87,7 @@ class TrackIndexer:
             if verbose:
                 print(f"  [{fi + 1}/{n_files}] {Path(path).name} ...", flush=True, end=" ")
 
-            df = load_and_clean(path)
+            df = load_and_clean(path, self._geo_bounds)
             segs_added = 0
 
             for mmsi, group in df.groupby("mmsi"):
