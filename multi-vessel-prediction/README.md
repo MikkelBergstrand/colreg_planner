@@ -51,8 +51,10 @@ saves a frame at that time, `--record` saves a video.
 | `head_on.yaml` | two vessels head-on, both responsive |
 | `crossing.yaml` | two vessels crossing, the target does not respond |
 | `overtaking.yaml` | two vessels overtaking, the target does not respond |
+| `overtaking_ahead.yaml` | ego overtakes a slower vessel dead ahead; the pass is far beyond a short planning horizon |
 | `head_on_crossing.yaml` | head-on plus a non-responsive crossing vessel |
-| `multi_crossing.yaml` | ego and three crossing vessels, one non-responsive |
+| `multi_crossing.yaml` | ego and three crossing vessels; ego is non-responsive, the others must avoid it |
+| `multi_crossing_give_way.yaml` | the same with a responsive ego: give-way to two starboard crossers while stand-on to a port crosser |
 | `multi_vessel.yaml` | four vessels, one non-responsive (paper Fig. 2) |
 | `give_way_stop.yaml` | ego gives way to a close crosser from starboard while a vessel alongside blocks a starboard turn; stopping is the clean solution |
 
@@ -134,14 +136,23 @@ on the vessel's `policy`:
   distance (expected, and worst case over the hypotheses with at least 10 %
   probability, so a stand-on own ship holds course until the filter actually
   doubts the give-way vessel), COLREGs (starboard
-  in head-on, act early when giving way, hold when standing on, no port turns
-  toward a give-way encounter), deviation from the route, manoeuvre effort,
+  in head-on, act early when giving way while the route course would still
+  pass inside `d_pass`, hold when standing on unless bound
+  to keep clear of another vessel, no port turns
+  toward a give-way encounter, alter course early when overtaking), deviation
+  from the route, manoeuvre effort,
   time lost along the route, and switching away from a manoeuvre less than
   one edge old. Code in
   `src/planner_api/manoeuvre_search.py`; tune with a per-vessel
-  `search: {depth, edge_s, plan_dt, horizon_s, top_k}` block. The plot draws the
-  own ship along its committed plan, with the others reacting to it, and the
-  console lists each plan made.
+  `search: {depth, edge_s, plan_dt, horizon_s, top_k}` block.
+  A vessel being overtaken only costs a collision until the TCPA on the
+  route course is below the predictor's `tcpa_threshold`. From then on, the
+  passing distance also counts the straight-line CPA after the horizon.
+  While the route course would also pass inside the overtaking `d_pass`, a
+  plan must alter course away from the vessel on its first edge, not slow
+  down behind it. No edge may turn back toward it until the own ship is past.
+  The plot draws the own ship along its committed plan, with the others
+  reacting to it, and the console lists each plan made.
 
 `--ego-policy` overrides ego's policy from the command line, for comparisons:
 

@@ -10,6 +10,7 @@ import io
 import itertools
 import math
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -372,3 +373,149 @@ def test_stopping_never_turns_the_ship_round():
     assert any(r.result.best.actions[0].name == "stop" for r in log["ego"].plans)
     assert max(abs(h) for h in headings) < math.radians(45)
     assert all(abs(s.psi) < math.radians(45) for s in traj["ego"])
+
+
+# ---------------------------------------------------------------------------
+# Overtaking (Rules 13, 16)
+# ---------------------------------------------------------------------------
+
+OVERTAKING_AHEAD = REPO / "scenarios/simulation/milliampere/overtaking_ahead.yaml"
+
+
+def _closer(states, planner, tcpa_s):
+    """Move ego up behind target_1 so the route-course TCPA is tcpa_s."""
+    closing = planner.configs["ego"].ref_speed - states["target_1"].speed
+    gap = states["target_1"].north - closing * tcpa_s
+    return {**states, "ego": replace(states["ego"], north=gap)}
+
+
+def test_overtaking_holds_course_beyond_the_tcpa_threshold():
+    """Out of the predictor's TCPA threshold, the vessel being overtaken
+    neither triggers the COLREGs term nor costs passing distance (only a
+    collision would): no manoeuvre yet."""
+    planner, states, graph, _ = _planner(OVERTAKING_AHEAD)
+    assert dict(graph.get_roles(0)) == {1: VesselRole.OVERTAKING}
+    assert planner.configs["ego"].tcpa_threshold < 150.0    # starts at TCPA 200 s
+    result = planner.plan(states, graph, t=0.0, responding_probs={"target_1": 0.99})
+    assert result.best.actions[0].is_nominal
+    assert all(p.terms["colregs"] == 0.0 and p.terms["safety"] == 0.0 for p in result.ranked)
+
+
+def test_overtaking_alters_course_inside_the_tcpa_threshold():
+    """Inside the threshold the overtaking own ship alters course, rather than
+    holding on or slowing behind the target, although the pass is beyond the
+    90 s horizon."""
+    planner, states, graph, _ = _planner(OVERTAKING_AHEAD)
+    states = _closer(states, planner, 0.9 * planner.configs["ego"].tcpa_threshold)
+    result = planner.plan(states, graph, t=0.0, responding_probs={"target_1": 0.99})
+    assert result.best.actions[0].course_offset != 0.0
+    # Holding course: the CPA after the horizon counts, so it is not "safe".
+    nominal = next(a for a in DEFAULT_ACTIONS if a.is_nominal)
+    hold = next(p for p in result.ranked if p.actions == (nominal, nominal))
+    assert hold.min_dist["target_1"] < 5.0
+    assert hold.terms["colregs"] > 0.0
+
+
+def test_no_overtaking_cost_once_the_offset_track_passes_clear():
+    planner, states, graph, _ = _planner(OVERTAKING_AHEAD)
+    d_pass = planner.configs["ego"].d_pass
+    states = _closer(states, planner, 0.9 * planner.configs["ego"].tcpa_threshold)
+    states["ego"] = replace(states["ego"], east=1.2 * d_pass)    # already on an offset track
+    result = planner.plan(states, graph, t=0.0, responding_probs={"target_1": 0.99})
+    # No conflict, so only turning back toward the target costs anything.
+    for p in result.ranked:
+        toward = any(a.course_offset < 0 for a in p.actions)
+        assert (p.terms["colregs"] > 0.0) == toward
+    # Holds its side until past the target.
+    assert result.best.actions[0].course_offset >= 0.0
+    assert result.best.min_dist["target_1"] >= d_pass
+
+
+def test_search_dp_overtakes_inside_the_tcpa_threshold_and_passes_clear():
+    from src.colregs_graph.colregs_classifier import _compute_dcpa_tcpa
+    (traj, *_), log, config, vcfgs, _ = _simulate(OVERTAKING_AHEAD, "search_dp")
+    ego, tgt = traj["ego"], traj["target_1"]
+    d_pass, tcpa_max = vcfgs["ego"]["d_pass"], vcfgs["ego"]["tcpa_threshold"]
+    plans = log["ego"].plans
+    first = next(r for r in plans if not r.result.best.actions[0].is_nominal)
+    # Not before the TCPA threshold (route course, as the planner sees it) ...
+    k = round(first.t / config.dt)
+    on_route = replace(ego[k], psi=0.0, speed=vcfgs["ego"]["speed"])
+    assert _compute_dcpa_tcpa(on_route, tgt[k])[1] < tcpa_max
+    # ... and then by altering course, never slowing behind the target.
+    assert first.result.best.actions[0].course_offset != 0.0
+    assert not any(r.result.best.actions[0].speed_factor < 1.0 for r in plans)
+    d = [math.hypot(p.north - q.north, p.east - q.east) for p, q in zip(ego, tgt)]
+    assert min(d) >= d_pass
+    # Keeps to the starboard side it chose: no plan turns back toward the
+    # target before drawing level with it.
+    level = next(k for k, (p, q) in enumerate(zip(ego, tgt)) if p.north >= q.north) * config.dt
+    assert not any(a.course_offset < 0 for r in plans if r.t < level for a in r.result.best.actions)
+
+
+def test_overtaking_does_not_turn_back_toward_the_target_near_d_pass():
+    """Just inside d_pass on the starboard side, a port turn would also count
+    as "altering course" and cost less deviation. It must not be chosen:
+    only a turn away from the target satisfies the overtaking rule."""
+    planner, states, graph, _ = _planner(OVERTAKING_AHEAD)
+    d_pass = planner.configs["ego"].d_pass
+    states = _closer(states, planner, 0.7 * planner.configs["ego"].tcpa_threshold)
+    states["ego"] = replace(states["ego"], east=0.97 * d_pass)
+    result = planner.plan(states, graph, t=0.0, responding_probs={"target_1": 0.99})
+    assert result.best.actions[0].course_offset > 0.0
+    assert all(a.course_offset >= 0.0 for a in result.best.actions)
+    toward = [p for p in result.ranked if any(a.course_offset < 0 for a in p.actions)]
+    assert toward and all(p.terms["colregs"] >= planner.cfg.weights.w_port for p in toward)
+
+
+# ---------------------------------------------------------------------------
+# Stand-on toward one vessel, give-way toward others
+# ---------------------------------------------------------------------------
+
+MULTI_CROSSING_GIVE_WAY = REPO / "scenarios/simulation/milliampere/multi_crossing_give_way.yaml"
+
+
+def test_give_way_duty_overrides_stand_on_toward_another_vessel():
+    """Give-way to two starboard crossers and stand-on to a port crosser: the
+    give-way manoeuvre starts now, not on "the next edge" at every replan."""
+    planner, states, graph, _ = _planner(MULTI_CROSSING_GIVE_WAY)
+    roles = dict(graph.get_roles(0))
+    assert sorted(r.name for r in roles.values()) == ["GIVE_WAY", "GIVE_WAY", "STAND_ON"]
+    result = planner.plan(states, graph, t=0.0)
+    assert result.best.actions[0].course_offset > 0.0
+    starboard_now = [p for p in result.ranked if p.actions[0].course_offset > 0
+                     and all(a.course_offset >= 0 for a in p.actions)]
+    assert all(p.terms["colregs"] == 0.0 for p in starboard_now)
+
+
+def test_search_dp_multi_crossing_give_way_passes_clear():
+    (traj, *_), log, config, vcfgs, _ = _simulate(MULTI_CROSSING_GIVE_WAY, "search_dp")
+    d_pass = vcfgs["ego"]["d_pass"]
+    assert log["ego"].plans[0].result.best.actions[0].course_offset > 0.0
+    ego = traj["ego"]
+    for vid in ("target_1", "target_2", "target_3"):
+        d = min(math.hypot(p.north - q.north, p.east - q.east) for p, q in zip(ego, traj[vid]))
+        assert d >= d_pass, vid
+
+
+def test_give_way_cost_lapses_once_the_route_course_passes_clear():
+    """Holding course while give-way is only penalised while resuming the
+    route course would pass inside d_pass of a give-way vessel."""
+    from src.colregs_graph.colregs_classifier import _compute_dcpa_tcpa
+    planner, states, graph, _ = _planner(MULTI_CROSSING_GIVE_WAY)
+    d_pass = planner.configs["ego"].d_pass
+    nominal = next(a for a in DEFAULT_ACTIONS if a.is_nominal)
+
+    def hold_colregs(st):
+        planner._active = None
+        r = planner.plan(st, graph, t=0.0)
+        return next(p for p in r.ranked if p.actions == (nominal, nominal)).terms["colregs"]
+
+    assert hold_colregs(states) == planner.cfg.weights.w_give_way
+    # Same roles (graph unchanged), but both starboard crossers now pass well ahead.
+    clear = {**states, **{vid: replace(states[vid], north=states[vid].north + 4 * d_pass)
+                          for vid in ("target_1", "target_2")}}
+    for vid in ("target_1", "target_2"):
+        dcpa, tcpa = _compute_dcpa_tcpa(clear["ego"], clear[vid])
+        assert dcpa >= d_pass and tcpa > 0
+    assert hold_colregs(clear) == 0.0

@@ -21,9 +21,54 @@ Cost of a plan, per hypothesis h with renormalised weight w_h:
     colregs_h  = w_port     * [any port offset while give-way/head-on to a vessel]
                + w_give_way * [first edge does not alter to starboard while
                                head-on to a vessel (Rule 14), or keeps course
-                               and speed while give-way (Rule 16: act early)]
+                               and speed while give-way to a vessel it is in
+                               conflict with (Rule 16: act early)]
                + w_stand_on * [manoeuvre on the first edge while stand-on to a
-                               vessel that is responsive under h]   (Rule 17(a)(i))
+                               vessel that is responsive under h, and not
+                               bound to keep clear of any vessel]   (Rule 17(a)(i))
+               + w_give_way * [first edge does not alter course away from
+                               a vessel being overtaken, while in conflict
+                               with it]   (Rules 13, 16)
+               + w_port     * [any edge alters course toward a vessel being
+                               overtaken in range]   (Rule 13: keep clear
+                               until finally past and clear)
+
+A vessel being overtaken is in range when, on the own ship's route course,
+the TCPA is below the predictor's tcpa_threshold. It is in conflict when
+the DCPA is also below the overtaking passing distance (d_pass_roles, else
+d_pass). Until a vessel being overtaken is in range, it only costs a
+collision (d_j < d_coll), not a passing distance short of d_pass. Otherwise
+the horizon would see the conflict first, and the search would slow down
+behind the vessel instead of passing. The collision cost stays because
+"in range" is judged on the route course, while a plan may turn toward the
+vessel. Once it is in range, a conflict triggers the
+COLREGs term, which makes the search commit to altering course. d_j then
+also includes the straight-line CPA from the end of the rollout. Overtaking
+closes slowly, so the pass often lies beyond the horizon, and a plan that
+drifts back onto the route before passing would otherwise look safe.
+
+"Away" and "toward" depend on which side of the overtaken vessel's track
+the own ship is on: on its starboard side, starboard is away. Dead astern
+(within 1 m of its track), either way is away. Without the toward term, the
+own ship sits near d_pass, where the conflict flickers on and off. Each time
+it reappears, a port turn back toward the route also escapes the
+alter-course term while costing less deviation, so the ship wiggles back
+and forth while overtaking.
+
+A give-way vessel is in conflict while resuming the route course from the
+current position would pass it inside the give-way passing distance
+(d_pass_roles, else d_pass). Once the manoeuvre has opened that distance,
+holding course is no longer penalised. Otherwise the own ship keeps
+"acting", for instance slowing down, until every give-way vessel is past.
+
+The stand-on term lapses while the own ship must keep clear of another
+approaching vessel (a give-way conflict, head-on, or an overtaking conflict). Rule 17's
+duty to keep course and speed holds toward the vessel that keeps clear; it
+cannot oblige a ship to stand on into a vessel it must itself avoid. With
+both terms, holding course is the cheaper violation (w_give_way <
+w_stand_on), and the search postpones the give-way manoeuvre to "the next
+edge" at every replan. The safety and port terms still keep the manoeuvre
+clear of the stand-on vessel.
 
 The worst case only ranges over hypotheses with weight >= risk_floor. Over
 all of them, a 1 % "the give-way vessel never acts" hypothesis would carry a
@@ -119,7 +164,7 @@ class SearchConfig:
 class ScoredPlan:
     actions:   tuple[SearchAction, ...]
     cost:      float
-    min_dist:  dict[str, float]          # worst case over hypotheses, per other vessel
+    min_dist:  dict[str, float]          # worst case over hypotheses, per other vessel (see d_j above)
     terms:     dict[str, float]
 
 
@@ -253,6 +298,42 @@ class ManoeuvreSearchPlanner:
             vid for vid in others
             if _compute_dcpa_tcpa(states[self.own_id], states[vid])[1] > 0
         }
+        own_now = states[self.own_id]
+        on_route = VesselState(own_now.north, own_now.east, own_cfg.nominal_psi, own_cfg.ref_speed)
+        # Give-way encounters still to resolve: resuming the route course from
+        # here would pass inside the give-way passing distance.
+        d_give_way = own_cfg.d_pass_roles.give_way if own_cfg.d_pass_roles else d_pass
+        give_way_conflict = {
+            vid for vid in approaching
+            if _compute_dcpa_tcpa(on_route, states[vid])[0] < d_give_way
+        }
+        # Vessels the own ship is overtaking (Rule 13), within the predictor's
+        # TCPA threshold on the route course. The duty to keep clear does not
+        # depend on whether the other vessel responds, so this uses the
+        # nominal graph rather than each hypothesis' graph. In conflict:
+        # resuming the route course from here would pass inside the
+        # overtaking passing distance.
+        d_overtake = own_cfg.d_pass_roles.overtaking if own_cfg.d_pass_roles else d_pass
+        overtaken: set[str] = set()         # in range
+        overtaken_far: set[str] = set()     # not yet in range: collision cost only
+        overtake_conflict = False
+        # +1: own ship on the starboard side of the overtaken vessel's track
+        # (starboard alterations are away from it), -1: port side, 0: astern.
+        overtake_side: dict[str, int] = {}
+        for j, r in nom_graph.get_roles(own_idx):
+            vid = idx_to_vid.get(j)
+            if r != VesselRole.OVERTAKING or vid not in approaching:
+                continue
+            dcpa, tcpa = _compute_dcpa_tcpa(on_route, states[vid])
+            if 0.0 < tcpa < own_cfg.tcpa_threshold:
+                overtaken.add(vid)
+                overtake_conflict |= dcpa < d_overtake
+                tgt = states[vid]
+                lateral = (math.cos(tgt.psi) * (own_now.east - tgt.east)
+                           - math.sin(tgt.psi) * (own_now.north - tgt.north))
+                overtake_side[vid] = 0 if abs(lateral) < 1.0 else (1 if lateral > 0 else -1)
+            else:
+                overtaken_far.add(vid)
         scored: list[tuple[ScoredPlan, list[dict[str, list[VesselState]]]]] = []
 
         # Submit every rollout first, so that with a pool they all run in parallel.
@@ -288,8 +369,13 @@ class ManoeuvreSearchPlanner:
                 for vid in others:
                     d = float(np.min(np.linalg.norm(
                         own - np.array([[s.north, s.east] for s in trajs[vid]]), axis=1)))
+                    if vid in overtaken:
+                        d_ext, t_ext = _compute_dcpa_tcpa(trajs[self.own_id][-1], trajs[vid][-1])
+                        if t_ext > 0:
+                            d = min(d, d_ext)
                     worst_d[vid] = min(worst_d[vid], d)
-                    s_h += w.w_safe * (max(0.0, d_pass - d) / d_pass) ** 2
+                    if vid not in overtaken_far:
+                        s_h += w.w_safe * (max(0.0, d_pass - d) / d_pass) ** 2
                     s_h += w.w_coll * (d < d_coll)
                 safety.append(s_h)
 
@@ -298,12 +384,23 @@ class ManoeuvreSearchPlanner:
                          if idx_to_vid[j] in approaching}
                 head_on = VesselRole.HEAD_ON in roles.values()
                 give_way = VesselRole.GIVE_WAY in roles.values()
+                give_way_open = any(r == VesselRole.GIVE_WAY and vid in give_way_conflict
+                                    for vid, r in roles.items())
                 if (head_on or give_way) and any(a.course_offset < 0 for a in actions):
                     c_h += w.w_port
                 if ((head_on and actions[0].course_offset <= 0)
-                        or (give_way and actions[0].is_nominal)):
+                        or (give_way_open and actions[0].is_nominal)):
                     c_h += w.w_give_way
-                if not actions[0].is_nominal and any(
+                if overtake_conflict and not any(
+                    actions[0].course_offset * side > 0 or (side == 0 and actions[0].course_offset)
+                    for side in overtake_side.values()
+                ):
+                    c_h += w.w_give_way
+                if any(a.course_offset * side < 0
+                       for a in actions for side in overtake_side.values()):
+                    c_h += w.w_port
+                # Stand on only when not bound to keep clear of another vessel.
+                if not (head_on or give_way_open or overtake_conflict) and not actions[0].is_nominal and any(
                     r == VesselRole.STAND_ON and assignment.get(vid) == Intent.RESPONSIVE
                     for vid, r in roles.items()
                 ):
