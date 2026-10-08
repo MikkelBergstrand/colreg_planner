@@ -305,6 +305,40 @@ vessels. `service.evaluate_manoeuvre(own_id, course_change_deg, speed_factor,
 duration_s)` predicts the closest approaches if the own ship starts that
 manoeuvre now, with every other vessel reacting to it, under each hypothesis.
 
+### DP reference for an own ship
+
+`ColregsDPPlanner` (`src/planner_api/dp_planner.py`) is the interface for
+running the planner in another vessel system: vessel states in, dynamic
+positioning (DP) reference out. It runs the same pipeline as the simulator's
+`search_dp` own ship: responsiveness estimated from the observations, COLREGs
+roles from the classifier, a manoeuvre search every `replan_s`, and the own
+ship's track along the chosen plan as the DP reference.
+
+```python
+from src.planner_api import ColregsDPPlanner, Route
+
+planner = ColregsDPPlanner(
+    own_id = "ego",
+    route  = Route(north=0.0, east=0.0, course_deg=0.0, speed=1.5),  # straight leg
+    dt     = 0.5,                                   # interval between update() calls [s]
+    config = {"interaction": {"use_responding_filter": True, "top_k_hypotheses": 2,
+                              "agent": {"d_pass": 30.0, "tcpa_threshold": 100.0}}},
+    classifier = {"d_u": 45.0, "dcpa_max": 450.0, "d_a": 3000.0},
+    parallel_workers = "auto",                      # worker processes for the rollouts
+)
+ref = planner.update(t, {"ego": own_state, "257123000": other_state, ...})
+ref.north, ref.east, ref.heading_deg, ref.vn, ref.ve   # DP reference at t
+planner.reference(t_now)                        # sample the committed plan at any rate
+planner.set_route(next_leg)                     # onto the next leg of the route
+```
+
+States are `VesselState`s or dicts with `north`, `east`, `speed` and one of
+`course_deg` / `heading_deg` / `psi`, in local NED metres. Call `update()` at a
+fixed `dt` with every observed vessel, own ship included. Vessels slower than
+0.5 m/s (e.g. at anchor) are planned around as holding position. A replan
+takes about 0.05–0.2 s on one process. `python scripts/dp_planner_demo.py` runs it
+on a synthetic head-on encounter.
+
 ## Parameters
 
 The VO parameters and their defaults are the fields of `VOAgentConfig`
@@ -348,6 +382,7 @@ scripts/
   run_simulation.py      simulations (scenarios/simulation/)
   run_AIS.py             real AIS playback, figures and metrics (scenarios/real/)
   planner_api_demo.py    planner API on a synthetic encounter
+  dp_planner_demo.py     own-ship DP reference from vessel states (ColregsDPPlanner)
   process_raw_ais.py     raw AIS -> encounter windows
   build_nominal_library.py
   tools/                 encounter browsing, sea-chart cropping, deviation analysis, profiling

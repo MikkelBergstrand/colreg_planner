@@ -558,6 +558,12 @@ class VesselPredictor:
                    for _, role in self._current_nom_graph.get_roles(idx))
         }
 
+    def rollout_configs(self) -> dict[str, VOAgentConfig]:
+        """Per-vessel rollout configs for the vessels moving in the latest
+        update(): what the interaction rollouts use (nominal route or library
+        velocities, VO parameters)."""
+        return self._active_configs(self._moving_states())
+
     @property
     def responsiveness(self) -> dict[str, float]:
         """p_responsive for every vessel that has a responding filter or a
