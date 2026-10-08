@@ -1,9 +1,11 @@
 # Simulation: one ego facing three simultaneous crossing vessels — two from
 # starboard (ego is GIVE-WAY toward both, they hold STAND-ON) and one from
-# port (that vessel is GIVE-WAY toward ego, ego holds STAND-ON). target_2 does
-# not respond. Unlike the two-vessel demos, this exercises the interaction
-# graph and joint hypothesis enumeration (2^N, N=4 here) with several
-# concurrent, mixed-role pairs rather than a single isolated encounter.
+# port (that vessel is GIVE-WAY toward ego, ego holds STAND-ON). Ego does not
+# respond: it holds course and speed, so the targets must keep clear of it
+# (see multi_crossing_give_way.yaml for a responsive ego). Unlike the
+# two-vessel demos, this exercises the interaction graph and joint hypothesis
+# enumeration (2^N, N=4 here) with several concurrent, mixed-role pairs
+# rather than a single isolated encounter.
 #
 # Run:
 #   python scripts/run_simulation.py --config scenarios/simulation/multi_crossing.yaml
