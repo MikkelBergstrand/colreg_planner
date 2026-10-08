@@ -156,7 +156,7 @@ class SearchWeights:
 @dataclass
 class SearchConfig:
     depth:     int   = 2
-    edge_s:    float = 15.0     # duration of each edge [s]
+    edge_s:    float = 7.5      # duration of each edge [s]
     plan_dt:   float = 1.0      # rollout timestep [s]
     horizon_s: float = 90.0     # rollout horizon [s]
     top_k:     int   = 2        # responsiveness hypotheses scored

@@ -132,7 +132,7 @@ on the vessel's `policy`:
 - any VO policy (e.g. `vo_analytic`): the policy's desired velocity becomes
   heading and speed commands for liteAmpere's course and speed controllers.
 - `search_dp`: dynamic positioning along a plan chosen by search. Every
-  `replan_s` (default 5 s) the own ship scores every sequence of two 15 s
+  `replan_s` (default 5 s) the own ship scores every sequence of two 7.5 s
   manoeuvres from {nominal, starboard 30°, starboard 60°, port 30°, half speed,
   stop},
   each rolled out with the prediction model while the other vessels react to
