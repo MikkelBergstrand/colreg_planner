@@ -294,6 +294,18 @@ def test_stop_action_zero_velocity_and_costs_time():
     assert by_actions[(nominal, nominal)].terms["time"] == pytest.approx(0.0, abs=0.05)
 
 
+def test_time_cost_does_not_depend_on_edge_length():
+    """Time lost is charged per time_ref_s (15 s), not per edge: stopping for
+    one 7.5 s edge costs half of stopping for one 15 s edge."""
+    planner, states, graph, _ = _planner(edge_s=7.5, plan_dt=1.0, horizon_s=60.0)
+    stop = next(a for a in DEFAULT_ACTIONS if a.name == "stop")
+    nominal = next(a for a in DEFAULT_ACTIONS if a.is_nominal)
+    by_actions = {p.actions: p for p in planner.plan(states, graph, t=0.0).ranked}
+    # About 1 s more is lost getting back up to speed.
+    assert by_actions[(stop, nominal)].terms["time"] == pytest.approx(0.5, abs=0.1)
+    assert by_actions[(stop, stop)].terms["time"] == pytest.approx(1.0, abs=0.1)
+
+
 def test_give_way_stop_scenario_geometry():
     planner, states, graph, config = _planner(GIVE_WAY_STOP)
     roles = dict(graph.get_roles(0))
