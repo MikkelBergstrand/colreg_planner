@@ -184,14 +184,15 @@ class SearchResult:
 class ManoeuvreSearchPlanner:
     """Exhaustive search over manoeuvre sequences for one own ship.
 
+    The own ship is the vessel under our control, so it always follows
+    COLREGs: every hypothesis scored has it responsive.
+
     Parameters
     ----------
     own_id : the planning vessel.
     agent_configs : VOAgentConfig per vessel, as used by the predictor. The
         own ship's nominal_psi, ref_speed and origin define its route.
     vessel_index_map : vessel_id -> COLREGs graph index.
-    own_intent : the own ship's intent. A non-responsive own ship never
-        manoeuvres, so it always gets the nominal plan.
     pool : optional RolloutPool (prediction/parallel.py). Given, every plan's
         rollouts are submitted to it before any is scored, so they run in
         parallel. The result is the same either way.
@@ -202,14 +203,12 @@ class ManoeuvreSearchPlanner:
         own_id:           str,
         agent_configs:    dict[str, VOAgentConfig],
         vessel_index_map: dict[str, int],
-        own_intent:       Intent = Intent.RESPONSIVE,
         config:           SearchConfig | None = None,
         pool:             RolloutPool | None = None,
     ) -> None:
         self.own_id    = own_id
         self.configs   = agent_configs
         self.index_map = vessel_index_map
-        self.own_intent = own_intent
         self.cfg       = config or SearchConfig()
         self.pool      = pool
         # Action under way and when it started: a replan may keep it going,
@@ -238,9 +237,6 @@ class ManoeuvreSearchPlanner:
         return seq
 
     def _sequences(self) -> list[tuple[SearchAction, ...]]:
-        nominal = next(a for a in self.cfg.actions if a.is_nominal)
-        if self.own_intent == Intent.NON_RESPONSIVE:
-            return [(nominal,) * self.cfg.depth]
         return list(itertools.product(self.cfg.actions, repeat=self.cfg.depth))
 
     def _committed_action(self, t: float) -> Optional[SearchAction]:
@@ -267,7 +263,7 @@ class ManoeuvreSearchPlanner:
 
         responding_probs : p(responsive) per vessel from the filters; the top_k
             hypotheses are scored. Without it, *intents* (or all responsive)
-            is the single hypothesis.
+            is the single hypothesis. Either way the own ship is responsive.
         classifier : if given, each rollout re-classifies on a private copy.
         """
         c, w = self.cfg, self.cfg.weights
@@ -276,10 +272,10 @@ class ManoeuvreSearchPlanner:
 
         if responding_probs is not None:
             probs = dict(responding_probs)
-            probs[self.own_id] = 1.0 if self.own_intent == Intent.RESPONSIVE else 0.0
+            probs[self.own_id] = 1.0
             hyps = rank_hypotheses(ids, probs, c.top_k)
         else:
-            base = intents or {}
+            base = {**(intents or {}), self.own_id: Intent.RESPONSIVE}
             hyps = [({vid: base.get(vid, Intent.RESPONSIVE) for vid in ids}, 1.0)]
         total = sum(p for _, p in hyps)
         hyps = [(a, p / total) for a, p in hyps]

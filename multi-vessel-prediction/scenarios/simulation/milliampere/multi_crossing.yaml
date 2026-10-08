@@ -4,9 +4,9 @@
 # Every length and speed is scaled by 0.3; time is unchanged, so the
 # encounter unfolds on the same clock. Ego is simulated with the milliAmpere
 # 3DOF model (sim_model: milliampere), identified for speeds up to ~2 m/s,
-# under dynamic positioning on a reference that steps along the predictor's
-# forecast for ego (policy: predictor_dp; vo_analytic gives heading/speed
-# control instead). Targets keep their kinematic models.
+# under heading/speed control (policy: vo_analytic). Ego is non-responsive
+# here, a test vessel the others must avoid rather than the ship under our
+# control, so it keeps its plain policy. Targets keep their kinematic models.
 #
 # Run:
 #   python scripts/run_simulation.py --config scenarios/simulation/milliampere/multi_crossing.yaml
@@ -22,7 +22,7 @@ scenario:
       speed: 1.5
       heading: 0.0
       sim_model: milliampere
-      policy: predictor_dp
+      policy: vo_analytic
       tcpa_threshold: 100.0
       d_pass: 30.0
       intent: non_responsive

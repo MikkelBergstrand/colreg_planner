@@ -96,18 +96,21 @@ def _other_indices(config: ScenarioConfig, vessel_idx: int) -> list[int]:
     return [i for i in range(len(config.vessels)) if i != vessel_idx]
 
 
-def _dp_own_intent_probs(config: ScenarioConfig, vessel_cfgs: dict[str, dict]) -> dict[str, float]:
-    """p(responsive) pinned to the configured intent for DP own ships
-    (predictor_dp, search_dp).
+_PLANNED_POLICIES = ("predictor_dp", "search_dp")
 
-    Such a vessel steers along a forecast made for itself, and it knows its
-    own intent, so every prediction made for it (the one it follows and the
-    one drawn) uses that intent instead of the filter's estimate.
+
+def _dp_own_intent_probs(config: ScenarioConfig, vessel_cfgs: dict[str, dict]) -> dict[str, float]:
+    """p(responsive) = 1 for own ships under our control (predictor_dp,
+    search_dp).
+
+    Such a vessel follows COLREGs by construction and steers along a forecast
+    made for itself, so every prediction made for it (the one it follows and
+    the one drawn) pins it responsive instead of using the filter's estimate.
     """
     return {
-        vi.vessel_id: 1.0 if vi.intent == Intent.RESPONSIVE else 0.0
+        vi.vessel_id: 1.0
         for vi in config.vessels
-        if vessel_cfgs.get(vi.vessel_id, {}).get("policy") in ("predictor_dp", "search_dp")
+        if vessel_cfgs.get(vi.vessel_id, {}).get("policy") in _PLANNED_POLICIES
     }
 
 
@@ -148,6 +151,16 @@ def _build_policy(
     one place (VOAgentConfig) and are shared with the rollout.
     """
     name = vcfg.get("policy", "constant_velocity")
+
+    # A planned vessel is the own ship under our control: it always follows
+    # COLREGs. A non-responsive "ego" is a test device for the other vessels'
+    # reactions, so it must use a plain policy (e.g. vo_analytic).
+    if name in _PLANNED_POLICIES and vi.intent == Intent.NON_RESPONSIVE:
+        raise ValueError(
+            f"Vessel '{vi.vessel_id}' uses policy {name}, which plans for a vessel under our "
+            f"control and so always follows COLREGs; it cannot be intent: non_responsive. "
+            f"Use a plain policy such as vo_analytic for a non-responsive vessel."
+        )
 
     # Non-responsive vessels ignore traffic entirely and LOS-follow their
     # nominal mission track — no COLREGs reasoning, no collision avoidance
@@ -200,7 +213,6 @@ def _build_policy(
             own_id           = vi.vessel_id,
             agent_configs    = agent_configs,
             vessel_index_map = {v.vessel_id: i for i, v in enumerate(config.vessels)},
-            own_intent       = vi.intent,
             config           = search_cfg,
             pool             = _search_pool(n_workers),
         )

@@ -103,6 +103,10 @@ scenario:
 - **Responsiveness.** `intent: responsive` vessels follow their COLREGs
   obligations. `intent: non_responsive` vessels keep their course whatever
   happens. The filter has to discover this from their motion. Play around by setting different vessels as non_responsive to see how that changes the predictions.
+  A vessel planned by `predictor_dp` or `search_dp` is the own ship under our
+  control and always follows COLREGs, so it cannot be `non_responsive`; give a
+  non-responsive `ego` a plain policy such as `vo_analytic` (as in
+  `multi_crossing.yaml`).
 - **Behavior.** Any VO parameter (see [Parameters](#parameters)) can be set per
   vessel, e.g. `d_pass` or `course_budget_deg`. Names are checked, so a typo
   gives an error.
@@ -120,8 +124,8 @@ on the vessel's `policy`:
 - `predictor_dp`: dynamic positioning on a moving reference. Every step the
   predictor (top-1 hypothesis, the dashed line in the plot) is rolled out one
   step from the current states, and the reference moves by the vessel's
-  predicted step and turns to its predicted course. The vessel's own
-  responsiveness is taken from its `intent`, not estimated. The DP law is
+  predicted step and turns to its predicted course. The vessel is the own
+  ship under our control, so it is always responsive, not estimated. The DP law is
   liteAmpere's with its damping moved onto the velocity error and the hull's
   drag at the reference velocity fed forward, so the hull stays within
   ~0.1 m of the reference instead of trailing it by 10–17 m.

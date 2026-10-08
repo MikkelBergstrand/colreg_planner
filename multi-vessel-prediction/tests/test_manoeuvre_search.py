@@ -39,7 +39,6 @@ def _planner(path=HEAD_ON, **cfg):
     }
     index_map = {vi.vessel_id: i for i, vi in enumerate(config.vessels)}
     planner = ManoeuvreSearchPlanner("ego", agent_configs, index_map,
-                                     own_intent=config.vessels[0].intent,
                                      config=SearchConfig(**cfg))
     states = {vi.vessel_id: VesselState(vi.state.north, vi.state.east, vi.state.heading,
                                         vi.state.speed) for vi in config.vessels}
@@ -118,12 +117,18 @@ def test_head_on_alters_to_starboard_now(probs):
     assert not any(a.course_offset < 0 for a in best.actions)
 
 
-def test_non_responsive_own_ship_only_considers_nominal():
-    planner, states, graph, _ = _planner(REPO / "scenarios/simulation/milliampere/multi_crossing.yaml")
-    assert planner.own_intent == Intent.NON_RESPONSIVE
-    result = planner.plan(states, graph, t=0.0)
-    assert len(result.ranked) == 1
-    assert all(a.is_nominal for a in result.best.actions)
+def test_own_ship_is_always_responsive():
+    """The own ship is under our control: told it is non-responsive, it still
+    gets the full search, and every hypothesis has it responsive."""
+    planner, states, graph, _ = _planner()
+    result = planner.plan(states, graph, t=0.0, intents={"ego": Intent.NON_RESPONSIVE})
+    assert len(result.ranked) == len(DEFAULT_ACTIONS) ** planner.cfg.depth
+    assert all(a["ego"] == Intent.RESPONSIVE for a, _ in result.hypotheses)
+
+
+def test_search_dp_rejects_a_non_responsive_own_ship():
+    with pytest.raises(ValueError, match="non_responsive"):
+        _simulate(REPO / "scenarios/simulation/milliampere/multi_crossing.yaml", "search_dp")
 
 
 def test_hypotheses_pin_own_intent_and_renormalise():

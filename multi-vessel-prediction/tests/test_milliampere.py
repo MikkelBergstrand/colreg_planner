@@ -324,7 +324,9 @@ def _simulate(config, vcfgs, pred):
 def test_milliampere_scenario_runs(path):
     config, vcfgs, _, pred = load_config(path)
     assert vcfgs["ego"]["sim_model"] == "milliampere"
-    assert vcfgs["ego"]["policy"] == "predictor_dp"
+    # A non-responsive ego is a test vessel, not the ship under our control.
+    expected = "vo_analytic" if vcfgs["ego"].get("intent") == "non_responsive" else "predictor_dp"
+    assert vcfgs["ego"]["policy"] == expected
     traj, *_ = _simulate(config, vcfgs, pred)
 
     ego = traj["ego"]
@@ -347,15 +349,24 @@ def test_predictor_dp_requires_milliampere():
 
 
 @pytest.mark.parametrize("use_filter", [True, False])
-def test_predictor_dp_non_responsive_ego_holds_course(use_filter):
-    # The predictor estimates other vessels' responsiveness, but a DP vessel's
-    # own intent is pinned to its configuration.
+def test_non_responsive_ego_holds_course(use_filter):
+    # multi_crossing's ego is the vessel the others must avoid: a plain policy
+    # that ignores traffic, on the milliAmpere model.
     path = REPO / "scenarios/simulation/milliampere/multi_crossing.yaml"
     config, vcfgs, _, pred = load_config(path)
     assert vcfgs["ego"]["intent"] == "non_responsive"
+    assert vcfgs["ego"]["policy"] == "vo_analytic"
     pred.use_responding_filter = use_filter
     traj, *_ = _simulate(config, vcfgs, pred)
     assert max(abs(s.east) for s in traj["ego"]) < 0.01
+
+
+def test_predictor_dp_rejects_a_non_responsive_own_ship():
+    # A planned vessel is the own ship under our control: always compliant.
+    config, vcfgs, _, pred = load_config(REPO / "scenarios/simulation/milliampere/multi_crossing.yaml")
+    vcfgs["ego"]["policy"] = "predictor_dp"
+    with pytest.raises(ValueError, match="non_responsive"):
+        _simulate(config, vcfgs, pred)
 
 
 def test_predictor_dp_follows_one_step_prediction():
@@ -385,26 +396,16 @@ def test_predictor_dp_follows_one_step_prediction():
     assert max(abs(nxt.psi) for _, nxt in seen) > math.radians(5)
 
 
-def test_drawn_prediction_uses_dp_vessels_own_intent():
-    # The plotted forecast for a predictor_dp vessel must be the one it follows:
-    # a non-responsive DP ego is drawn holding course, not swerving.
+def test_planned_vessels_are_pinned_responsive():
+    # Every prediction made for a predictor_dp / search_dp vessel (the one it
+    # follows and the one drawn) pins it responsive; plain-policy vessels are
+    # left to the filter.
     sys.path.insert(0, str(REPO / "scripts"))
     import run_simulation as rs
 
-    path = REPO / "scenarios/simulation/milliampere/multi_crossing.yaml"
-    config, vcfgs, _, pred = load_config(path)
-    traj, _, _, snaps, filt, hist = _simulate(config, vcfgs, pred)
-    pred_fn = rs._make_pred_fn(
-        config.vessels, vcfgs, config.dt, round(pred.horizon / config.dt), config,
-        policy_type=pred.policy_type, rollout_model=pred.rollout_model,
-        classifier_snapshots=snaps, responding_filters=filt, responding_history=hist,
-        top_k=1, reclassify_in_rollout=pred.reclassify_in_rollout,
-        fixed_probs=rs._dp_own_intent_probs(config, vcfgs),
-    )
-    assert rs._dp_own_intent_probs(config, vcfgs) == {"ego": 0.0}
-    for k in (0, 10, 20):
-        drawn = pred_fn({vid: traj[vid][k] for vid in traj}, k)["ego"]
-        assert max(abs(s.east) for s in drawn) < 0.01
+    for name, expected in (("multi_crossing_give_way", {"ego": 1.0}), ("multi_crossing", {})):
+        config, vcfgs, _, _ = load_config(REPO / f"scenarios/simulation/milliampere/{name}.yaml")
+        assert rs._dp_own_intent_probs(config, vcfgs) == expected
 
 
 def test_adapter_reports_hull_heading_when_going_astern():
