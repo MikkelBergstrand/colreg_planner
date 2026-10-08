@@ -1,12 +1,12 @@
 """planner_api/manoeuvres.py
 
-Discrete own-ship manoeuvres, the actions a symbolic planner chooses between.
+Own-ship manoeuvres for PredictionService.evaluate_manoeuvre().
 
 A manoeuvre alters course and/or speed relative to the vessel's nominal
 velocity for duration_s, then returns to the nominal course (a parallel
-offset track). It starts now or after a delay. PredictionService.
-evaluate_manoeuvre() rolls one out against every responsiveness hypothesis,
-with the other vessels reacting to it.
+offset track). It starts now or after a delay. evaluate_manoeuvre() rolls
+one out against every responsiveness hypothesis, with the other vessels
+reacting to it.
 """
 
 from __future__ import annotations
@@ -24,14 +24,6 @@ class Manoeuvre:
     speed_factor: float = 1.0        # multiplier on the nominal speed
     duration_s: float = 180.0        # time before returning to the nominal course
 
-    @property
-    def keeps_course_and_speed(self) -> bool:
-        return self.course_change_deg == 0.0 and self.speed_factor == 1.0
-
-    @property
-    def alters_to_port(self) -> bool:
-        return self.course_change_deg < 0.0
-
     def to_dict(self) -> dict:
         return {
             "name": self.name,
@@ -39,19 +31,6 @@ class Manoeuvre:
             "speed_factor": self.speed_factor,
             "duration_s": self.duration_s,
         }
-
-
-# In order of preference (see ColregsPlanningProblem.solve): no action, then
-# course alterations large enough to be readily apparent (Rule 8(b)),
-# smallest first, then speed, then port as a last resort.
-DEFAULT_MANOEUVRES: tuple[Manoeuvre, ...] = (
-    Manoeuvre("hold"),
-    Manoeuvre("stbd_30", course_change_deg=30.0),
-    Manoeuvre("stbd_45", course_change_deg=45.0),
-    Manoeuvre("stbd_70", course_change_deg=70.0),
-    Manoeuvre("slow_50", speed_factor=0.5),
-    Manoeuvre("port_30", course_change_deg=-30.0),
-)
 
 
 def velocity_plan(

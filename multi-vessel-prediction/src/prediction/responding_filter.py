@@ -207,10 +207,6 @@ class RespondingFilter:
     def p_responsive(self) -> float:
         return float(self.responding_state[0])
 
-    @property
-    def p_non_responsive(self) -> float:
-        return float(self.responding_state[1])
-
     def predicted_p_responsive(self) -> float:
         """One-step-ahead predicted P(responsive): p̄(r_t) from Eq. 9,
         obtained by propagating the current posterior through the

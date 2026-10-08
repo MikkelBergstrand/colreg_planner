@@ -55,8 +55,7 @@ from src.colregs_graph.colregs_graph import ColregsGraph, VesselRole
 # Both are configurable via VizConfig.font_size / vessel_label_fontsize
 # (see _apply_font_config, called once per LiveVisualizer instance).
 
-FONT_SIZE              = 13.0
-VESSEL_LABEL_FONT_SIZE = 17.0
+FONT_SIZE = 13.0
 
 # Shared panel background — kept identical across the main map and the
 # interaction graph so the two read as one figure.
@@ -86,9 +85,8 @@ def _apply_font_config(vc: "VizConfig") -> None:
     map, VO/CTO debug, COLREGs graph, responding — draws text at the same
     configured size.
     """
-    global FONT_SIZE, VESSEL_LABEL_FONT_SIZE
-    FONT_SIZE              = vc.font_size
-    VESSEL_LABEL_FONT_SIZE = vc.vessel_label_fontsize
+    global FONT_SIZE
+    FONT_SIZE = vc.font_size
     plt.rcParams.update({
         "axes.labelsize":  FONT_SIZE,
         "xtick.labelsize": FONT_SIZE,
@@ -162,7 +160,6 @@ def _coerce_off_string(v) -> str:
 class VesselMeta:
     vessel_id:     str
     initial_state: VesselState
-    intent_label:  str = ""
     display_id:    str = ""   # label shown on the map / legend / graph (e.g. "V1").
                               # Falls back to vessel_id when empty. Internal dict keys
                               # (trajectories, predictions, ...) always stay vessel_id.
@@ -995,59 +992,6 @@ def _draw_colregs_graph(
 
 
 # ---------------------------------------------------------------------------
-# COLREGs graph visualizer (standalone figure — live mode or external use)
-# ---------------------------------------------------------------------------
-
-class ColregsGraphViz:
-    """Separate figure showing the live COLREGs role graph.
-
-    Nodes represent vessels, positioned at their current NED coordinates on
-    the same spatial scale as the main map.  An edge is drawn for every
-    active ColregsEdge, colour-coded by scenario type, with per-vessel role
-    labels on each half of the edge line.
-
-    Vessel indices in the graph (0 = ego, 1..N = targets) are resolved to
-    vessel IDs via the order of sim_info.vessels.
-    """
-
-    def __init__(
-        self,
-        sim_info: SimInfo,
-        vc:       Optional["VizConfig"] = None,
-    ) -> None:
-        self.vc = vc or VizConfig.default()
-        self._idx_to_id: dict[int, str] = {
-            i: m.vessel_id for i, m in enumerate(sim_info.vessels)
-        }
-        self._idx_to_color: dict[int, str] = {
-            i: VESSEL_COLORS[i % len(VESSEL_COLORS)]
-            for i in range(len(sim_info.vessels))
-        }
-
-        self.fig, self.ax = plt.subplots(figsize=(5.5, 5.5))
-        self.ax.set_facecolor(PANEL_BG)
-        self.ax.grid(True, alpha=0.22, linestyle="--")
-        self.fig.tight_layout()
-
-    def update(
-        self,
-        states: dict[str, VesselState],
-        graph:  ColregsGraph,
-        t:      float,
-    ) -> None:
-        _draw_colregs_graph(
-            self.ax, states, graph,
-            self._idx_to_id, self._idx_to_color,
-            t, self.vc,
-        )
-        self.fig.canvas.draw()
-        self.fig.canvas.flush_events()
-
-    def close(self) -> None:
-        plt.close(self.fig)
-
-
-# ---------------------------------------------------------------------------
 # Vessel artist (main map)
 # ---------------------------------------------------------------------------
 
@@ -1106,9 +1050,6 @@ class VesselArtist:
                 patheffects.withStroke(linewidth=2.5, foreground="white"),
             ],
         )
-
-        self._nonresponsive = meta.intent_label.strip().upper() == "NON_RESPONSIVE"
-        self.subtitle = None
 
     def update(self, state: VesselState) -> None:
         n, e = state.north, state.east
@@ -1913,10 +1854,6 @@ class LiveVisualizer:
         if self._video_writer is not None:
             self._video_writer.finish()
             self._video_writer = None
-
-    @property
-    def is_recording(self) -> bool:
-        return self._video_writer is not None
 
     def save_animation(
         self,

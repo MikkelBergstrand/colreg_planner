@@ -519,31 +519,27 @@ class PredictionService:
         speed_factor: float = 1.0,
         duration_s: float = 180.0,
         start_s: float = 0.0,
-        hypotheses: Iterable[int] | None = None,
     ) -> dict:
         """Predict the outcome if vessel_id starts a manoeuvre start_s from now.
 
         The vessel keeps its nominal course until start_s, alters course by
         course_change_deg (positive = starboard) and scales its speed by
         speed_factor for duration_s, then returns to its nominal course. Every other vessel reacts to it according to its
-        COLREGs role, under each hypothesis in the current snapshot (or only
-        those whose rank is in *hypotheses*).
+        COLREGs role, under each hypothesis in the current snapshot.
 
         Returns the closest approach to every other vessel per hypothesis,
-        and the worst case over the evaluated hypotheses.
+        and the worst case over all hypotheses.
         """
         return self.evaluate_manoeuvres(
             vessel_id,
             [dict(course_change_deg=course_change_deg, speed_factor=speed_factor,
                   duration_s=duration_s, start_s=start_s)],
-            hypotheses=hypotheses,
         )[0]
 
     def evaluate_manoeuvres(
         self,
         vessel_id: str,
         manoeuvres: Iterable[Mapping[str, float]],
-        hypotheses: Iterable[int] | None = None,
     ) -> list[dict]:
         """evaluate_manoeuvre() for several manoeuvres, in the same order.
 
@@ -558,8 +554,7 @@ class PredictionService:
         if not v.moving:
             raise ValueError(f"vessel '{vessel_id}' is not moving")
         p = self._predictor
-        ranks = None if hypotheses is None else frozenset(hypotheses)
-        hyps = [h for h in self.snapshot.hypotheses if ranks is None or h.rank in ranks]
+        hyps = self.snapshot.hypotheses
         nominal = None
 
         # Submit every rollout not in the cache, then collect.
@@ -568,7 +563,7 @@ class PredictionService:
             m = Manoeuvre("custom", float(spec.get("course_change_deg", 0.0)),
                           float(spec.get("speed_factor", 1.0)), float(spec.get("duration_s", 180.0)))
             start_s = float(spec.get("start_s", 0.0))
-            key = (vessel_id, m.course_change_deg, m.speed_factor, m.duration_s, start_s, ranks)
+            key = (vessel_id, m.course_change_deg, m.speed_factor, m.duration_s, start_s)
             if key in self._manoeuvre_cache:
                 jobs.append((key, m, start_s, None))
                 continue

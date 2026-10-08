@@ -59,7 +59,6 @@ def _build_sim_info(w: dict, frames: list[dict[str, VesselState]]) -> SimInfo:
         VesselMeta(
             vessel_id=f"V{i+1}",
             initial_state=frames[0][vid],
-            intent_label=f"MMSI {vid}",
         )
         for i, vid in enumerate(sorted_vids)
     ]

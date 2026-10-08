@@ -143,22 +143,10 @@ def test_evaluate_manoeuvres_pool_matches_serial():
     assert single == serial[3]
 
 
-def test_evaluate_manoeuvres_hypothesis_filter():
-    service = _service(0)
-    ranks = [h.rank for h in service.snapshot.hypotheses]
-    assert len(ranks) > 1
-    full = service.evaluate_manoeuvres("ego", _SPECS)
-    only = service.evaluate_manoeuvres("ego", _SPECS, hypotheses=[ranks[0]])
-    for f, o in zip(full, only):
-        assert [h["hypothesis_rank"] for h in o["per_hypothesis"]] == [ranks[0]]
-        assert o["per_hypothesis"][0] == f["per_hypothesis"][0]
-
-
 if __name__ == "__main__":
     test_resolve_workers()
     test_parallel_matches_serial()
     test_rollout_error_propagates_from_worker()
     test_search_planner_pool_matches_serial()
     test_evaluate_manoeuvres_pool_matches_serial()
-    test_evaluate_manoeuvres_hypothesis_filter()
     print("ok")

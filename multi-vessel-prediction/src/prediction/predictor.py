@@ -120,7 +120,6 @@ class VesselPredictor:
 
         self._stable_index : dict[str, int] = {}
         self._next_index   : int            = 0
-        self._active_ids   : frozenset[str] = frozenset()
 
         self._responding_filters     : dict[str, RespondingFilter]     = {}
         self._known_intents          : dict[str, Intent]               = dict(known_intents or {})
@@ -324,7 +323,6 @@ class VesselPredictor:
                     self._nominal_cache[vid] = result
 
         active_ids = list(states.keys())
-        self._active_ids = frozenset(active_ids)
 
         self._current_states = dict(states)
 
@@ -543,24 +541,14 @@ class VesselPredictor:
             self._nominal_retriever.set_origin(ref_lat, ref_lon)
 
     @property
-    def latched_ids(self) -> set[str]:
-        """Vessel ids currently in an active encounter."""
-        if self._current_nom_graph is None:
-            return set()
-        return {
-            vid for vid, idx in self._stable_index.items()
-            if bool(self._current_nom_graph.get_roles(idx))
-        }
-
-    @property
     def burden_ids(self) -> set[str]:
         """Vessel ids currently holding a non-STAND-ON COLREGs role (GIVE_WAY,
         HEAD_ON, OVERTAKING, or AVOID_COLLISION) toward at least one
         counterpart, per the raw classifier graph (``_current_nom_graph``,
         i.e. G^nom_t — before ``apply_responsiveness()`` overrides roles for
-        non-responsive counterparts). A strict subset of ``latched_ids``:
-        a vessel latched into an encounter with STAND_ON only is not
-        "burdened" — it isn't obligated to give way or otherwise act.
+        non-responsive counterparts). A vessel in encounters with
+        STAND_ON only is not "burdened": it isn't obligated to give way or
+        otherwise act.
         """
         if self._current_nom_graph is None:
             return set()
@@ -588,18 +576,6 @@ class VesselPredictor:
         """Fix a vessel's responsiveness (e.g. the own ship) instead of estimating it."""
         self._known_intents[vessel_id] = intent
         self._responding_filters.pop(vessel_id, None)
-
-    def rollout_with_plans(
-        self,
-        plans:      dict[str, np.ndarray],
-        assignment: dict[str, Intent],
-        n_steps:    int | None = None,
-    ) -> dict[str, list[VesselState]]:
-        """Roll out the current situation with some vessels executing a fixed plan.
-
-        Blocking form of submit_rollout_with_plans(); same arguments.
-        """
-        return self.submit_rollout_with_plans(plans, assignment, n_steps).result()
 
     def submit_rollout_with_plans(
         self,
@@ -680,11 +656,6 @@ class VesselPredictor:
         return self._current_nom_graph
 
     @property
-    def active_vessels(self) -> list[str]:
-        """Vessel ids observed in the most recent update() call."""
-        return list(self._active_ids)
-
-    @property
     def dt(self) -> float:
         """Prediction timestep [s]."""
         return self._dt
@@ -700,19 +671,9 @@ class VesselPredictor:
         return self._min_moving_speed
 
     @property
-    def current_states(self) -> dict[str, VesselState]:
-        """States passed to the most recent update() call."""
-        return dict(self._current_states)
-
-    @property
     def graph_index(self) -> dict[str, int]:
         """Vessel id -> integer index used in colregs_graph edges."""
         return dict(self._stable_index)
-
-    @property
-    def last_nominal_trajectories(self) -> dict[str, list[VesselState]]:
-        """Result of the most recent predict_nominal() call."""
-        return dict(self._last_nominal_trajs)
 
     def predict_nominal(self) -> dict[str, list[VesselState]]:
         """Run nominal-only integration (no VO interaction).

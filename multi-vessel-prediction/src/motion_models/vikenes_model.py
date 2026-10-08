@@ -74,17 +74,6 @@ class ViknesParams:
         default_factory=lambda: np.diag([0.0, 0.0, 3_224.0])
     )
 
-    # Ship polygon (columns = vertices, in body frame) for visualization
-    @property
-    def ship_vertices(self) -> np.ndarray:
-        L, W = self.length, self.width
-        return np.array([
-            [ L / 2,  W / 2],
-            [ L / 2, -W / 2],
-            [-L / 2, -W / 2],
-            [-L / 2,  W / 2],
-        ]).T  # (2, 4)
-
 
 # ---------------------------------------------------------------------------
 # State
@@ -117,17 +106,6 @@ class ViknesState:
         """Speed over ground [m/s]."""
         return float(np.hypot(self.u, self.v))
 
-    @property
-    def heading_vec(self) -> np.ndarray:
-        """Unit vector in the heading direction (NED frame)."""
-        return np.array([np.cos(self.psi), np.sin(self.psi)])
-
-    @property
-    def ned_velocity(self) -> np.ndarray:
-        """Velocity in NED frame [vx, vy]."""
-        R = _rot2d(self.psi)
-        return R @ np.array([self.u, self.v])
-
     @classmethod
     def from_ned_speed_heading(
         cls,
@@ -143,12 +121,6 @@ class ViknesState:
 # ---------------------------------------------------------------------------
 # Helper math (no external deps beyond numpy)
 # ---------------------------------------------------------------------------
-
-def _rot2d(psi: float) -> np.ndarray:
-    """2D rotation matrix R(psi) mapping body → NED."""
-    c, s = np.cos(psi), np.sin(psi)
-    return np.array([[c, -s], [s, c]])
-
 
 def _Rmtrx(psi: float) -> np.ndarray:
     """3x3 rotation/transformation matrix for [u,v,r] → [x_dot, y_dot, psi_dot]."""

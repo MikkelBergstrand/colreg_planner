@@ -38,7 +38,6 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-import matplotlib.patches as mpatches
 import pandas as pd
 
 
@@ -285,7 +284,6 @@ def _animate_window(w: dict) -> None:
         VesselMeta(
             vessel_id=str(mmsi),
             initial_state=frames[0][str(mmsi)],
-            intent_label=f"MMSI {mmsi}",
         )
         for mmsi in mmsi_list if str(mmsi) in frames[0]
     ]

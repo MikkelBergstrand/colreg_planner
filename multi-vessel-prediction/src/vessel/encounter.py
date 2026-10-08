@@ -75,12 +75,6 @@ class ScenarioConfig:
     def ego(self) -> VesselInit:
         return self.vessels[0]
 
-    def get_vessel(self, vessel_id: str) -> VesselInit:
-        for v in self.vessels:
-            if v.vessel_id == vessel_id:
-                return v
-        raise KeyError(f"Vessel '{vessel_id}' not found in scenario.")
-
 
 # ---------------------------------------------------------------------------
 # Geometry helpers

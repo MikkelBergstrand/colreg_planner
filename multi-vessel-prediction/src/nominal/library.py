@@ -26,10 +26,6 @@ class LibraryConfig:
     stride: int  # indexing stride used at build time
     dt: float    # uniform resample interval [s]
 
-    @property
-    def n_fwd(self) -> int:
-        return self.l
-
     def to_dict(self) -> dict:
         return asdict(self)
 

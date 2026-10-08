@@ -361,7 +361,7 @@ class ManoeuvreSearchPlanner:
         for actions, handles in zip(sequences, pending):
             safety, colregs, worst_d = [], [], {vid: math.inf for vid in others}
             rollouts = []
-            for (assignment, p_h), (int_intents, graph), handle in zip(hyps, graphs, handles):
+            for (assignment, _), (int_intents, graph), handle in zip(hyps, graphs, handles):
                 trajs = handle.result()
                 rollouts.append(trajs)
                 own = np.array([[s.north, s.east] for s in trajs[self.own_id]])

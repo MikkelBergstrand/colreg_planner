@@ -12,11 +12,8 @@ Two coordinated-turn kinematic models for maritime vessel motion:
       More physically faithful for maneuvering vessels.
 
 Both expose the same interface:
-    state  = Model.step(state, action, dt)
-    state  = Model.from_pos_speed_heading(north, east, speed, heading)
-    traj   = Model.propagate(state, action, dt, n_steps)
-
-The VO action parameterization u = [v, v*omega] is supported by both.
+    state  = Model.step(state, ..., dt)
+    state  = State.from_pos_speed_heading(north, east, speed, heading)
 
 Author: Johannes Robert Skarø
 """
@@ -24,7 +21,6 @@ Author: Johannes Robert Skarø
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Union
 import numpy as np
 
 
@@ -57,14 +53,6 @@ class CTCoupledState:
     # --- Derived quantities ---
 
     @property
-    def position(self) -> np.ndarray:
-        return np.array([self.north, self.east])
-
-    @property
-    def velocity(self) -> np.ndarray:
-        return np.array([self.vn, self.ve])
-
-    @property
     def speed(self) -> float:
         return float(np.hypot(self.vn, self.ve))
 
@@ -72,25 +60,6 @@ class CTCoupledState:
     def heading(self) -> float:
         """Course = heading [rad], NED. 0=north, +ve clockwise."""
         return float(np.arctan2(self.ve, self.vn))
-
-    @property
-    def heading_vec(self) -> np.ndarray:
-        h = self.heading
-        return np.array([np.cos(h), np.sin(h)])
-
-    @property
-    def heading_perp(self) -> np.ndarray:
-        """Starboard-perpendicular unit vector."""
-        h = self.heading
-        return np.array([-np.sin(h), np.cos(h)])
-
-    @property
-    def as_array(self) -> np.ndarray:
-        return np.array([self.north, self.east, self.vn, self.ve])
-
-    @classmethod
-    def from_array(cls, x: np.ndarray) -> "CTCoupledState":
-        return cls(north=x[0], east=x[1], vn=x[2], ve=x[3])
 
     @classmethod
     def from_pos_speed_heading(
@@ -140,65 +109,6 @@ class CTCoupledModel:
             ve=v * np.sin(new_psi),
         )
 
-    @staticmethod
-    def step_from_action(state: CTCoupledState, u: np.ndarray, dt: float) -> CTCoupledState:
-        """Propagate from VO action u = [v, v*omega]."""
-        v     = float(u[0])
-        omega = float(u[1] / u[0]) if abs(u[0]) > 1e-6 else 0.0
-        # Rebuild speed in current heading direction
-        psi   = state.heading
-        s     = CTCoupledState(north=state.north, east=state.east,
-                         vn=v * np.cos(psi), ve=v * np.sin(psi))
-        return CTCoupledModel.step(s, omega, dt)
-
-    @staticmethod
-    def action_from_state(state: CTCoupledState, omega: float = 0.0) -> np.ndarray:
-        """Extract VO action u = [v, v*omega] from state."""
-        v = state.speed
-        return np.array([v, v * omega])
-
-    @staticmethod
-    def action_matrix(state: CTCoupledState, t: float) -> np.ndarray:
-        """Linearized CT action matrix A(t): p(t) ≈ p0 + A(t) @ u."""
-        psi = state.heading
-        c, s = np.cos(psi), np.sin(psi)
-        return np.array([
-            [t * c,  -(t**2 / 2) * s],
-            [t * s,   (t**2 / 2) * c],
-        ])
-
-    @staticmethod
-    def jacobian(state: CTCoupledState, omega: float, dt: float) -> np.ndarray:
-        """Linearized Jacobian F = dx_{k+1}/dx_k (4x4)."""
-        v   = state.speed
-        psi = state.heading
-        if abs(omega) < 1e-6:
-            return np.array([
-                [1, 0, dt,  0],
-                [0, 1,  0, dt],
-                [0, 0,  1,  0],
-                [0, 0,  0,  1],
-            ], dtype=float)
-        else:
-            psi_new = psi + omega * dt
-            F = np.eye(4)
-            F[0, 2] =  (np.sin(psi_new) - np.sin(psi)) / omega
-            F[0, 3] = -(np.cos(psi_new) - np.cos(psi)) / omega
-            F[1, 2] =  (np.cos(psi) - np.cos(psi_new)) / omega
-            F[1, 3] =  (np.sin(psi_new) - np.sin(psi)) / omega
-            return F
-
-    @staticmethod
-    def propagate(
-        state: CTCoupledState, omega: float, dt: float, n_steps: int
-    ) -> list[CTCoupledState]:
-        traj = [state]
-        for _ in range(n_steps):
-            state = CTCoupledModel.step(state, omega, dt)
-            traj.append(state)
-        return traj
-
-
 # ---------------------------------------------------------------------------
 # CT-Decoupled (heading independent of course):  [north, east, psi, v, r]
 # ---------------------------------------------------------------------------
@@ -222,43 +132,12 @@ class CTDecoupledState:
     # --- Derived quantities ---
 
     @property
-    def position(self) -> np.ndarray:
-        return np.array([self.north, self.east])
-
-    @property
     def speed(self) -> float:
         return abs(self.v)
 
     @property
     def heading(self) -> float:
         return _wrap(self.psi)
-
-    @property
-    def heading_vec(self) -> np.ndarray:
-        return np.array([np.cos(self.psi), np.sin(self.psi)])
-
-    @property
-    def heading_perp(self) -> np.ndarray:
-        return np.array([-np.sin(self.psi), np.cos(self.psi)])
-
-    @property
-    def ned_velocity(self) -> np.ndarray:
-        """Velocity in NED frame (surge only, no sway)."""
-        return self.v * self.heading_vec
-
-    @property
-    def course(self) -> float:
-        """Course over ground [rad] — direction of NED velocity."""
-        vned = self.ned_velocity
-        return float(np.arctan2(vned[1], vned[0]))
-
-    @property
-    def as_array(self) -> np.ndarray:
-        return np.array([self.north, self.east, self.psi, self.v, self.r])
-
-    @classmethod
-    def from_array(cls, x: np.ndarray) -> "CTDecoupledState":
-        return cls(north=x[0], east=x[1], psi=x[2], v=x[3], r=x[4])
 
     @classmethod
     def from_pos_speed_heading(
@@ -310,87 +189,3 @@ class CTDecoupledModel:
             v=v,
             r=r,
         )
-
-    @staticmethod
-    def step_from_action(state: CTDecoupledState, u: np.ndarray, dt: float) -> CTDecoupledState:
-        """Propagate from VO action u = [v, v*r]."""
-        v = float(u[0])
-        r = float(u[1] / u[0]) if abs(u[0]) > 1e-6 else 0.0
-        s = CTDecoupledState(north=state.north, east=state.east,
-                         psi=state.psi, v=v, r=r)
-        return CTDecoupledModel.step(s, dt)
-
-    @staticmethod
-    def action_from_state(state: CTDecoupledState) -> np.ndarray:
-        """Extract VO action u = [v, v*r] from state."""
-        return np.array([state.v, state.v * state.r])
-
-    @staticmethod
-    def action_matrix(state: CTDecoupledState, t: float) -> np.ndarray:
-        """Linearized CT action matrix A(t): p(t) ≈ p0 + A(t) @ u.
-
-        Uses heading psi directly (not course), which is the correct
-        linearization point for a heading-explicit model.
-        """
-        psi  = state.psi
-        c, s = np.cos(psi), np.sin(psi)
-        return np.array([
-            [t * c,  -(t**2 / 2) * s],
-            [t * s,   (t**2 / 2) * c],
-        ])
-
-    @staticmethod
-    def jacobian(state: CTDecoupledState, dt: float) -> np.ndarray:
-        """Linearized Jacobian F = dx_{k+1}/dx_k (5x5)."""
-        v, psi, r = state.v, state.psi, state.r
-        if abs(r) < 1e-6:
-            F = np.eye(5)
-            F[0, 2] = -v * np.sin(psi) * dt
-            F[0, 3] =  np.cos(psi) * dt
-            F[1, 2] =  v * np.cos(psi) * dt
-            F[1, 3] =  np.sin(psi) * dt
-            F[2, 4] =  dt
-        else:
-            psi_new = psi + r * dt
-            ir = 1.0 / r
-            F = np.eye(5)
-            # d(north)/d(psi)
-            F[0, 2] = ir * (np.cos(psi_new) - np.cos(psi))
-            # d(north)/d(v)
-            F[0, 3] = ir * (np.sin(psi_new) - np.sin(psi))
-            # d(north)/d(r)
-            F[0, 4] = (v * ir) * (dt * np.cos(psi_new) - ir * (np.sin(psi_new) - np.sin(psi)))
-            # d(east)/d(psi)
-            F[1, 2] = ir * (np.sin(psi_new) - np.sin(psi))
-            # d(east)/d(v)
-            F[1, 3] = -ir * (np.cos(psi_new) - np.cos(psi))
-            # d(east)/d(r)
-            F[1, 4] = (v * ir) * (dt * np.sin(psi_new) + ir * (np.cos(psi_new) - np.cos(psi)))
-            # d(psi)/d(r)
-            F[2, 4] = dt
-        return F
-
-    @staticmethod
-    def propagate(
-        state: CTDecoupledState, dt: float, n_steps: int,
-        r_schedule: list[float] | None = None,
-    ) -> list[CTDecoupledState]:
-        """Propagate forward. Optionally supply a turn-rate schedule."""
-        traj = [state]
-        for k in range(n_steps):
-            if r_schedule is not None:
-                state = CTDecoupledState(
-                    north=state.north, east=state.east,
-                    psi=state.psi, v=state.v,
-                    r=r_schedule[k] if k < len(r_schedule) else state.r,
-                )
-            state = CTDecoupledModel.step(state, dt)
-            traj.append(state)
-        return traj
-
-
-# ---------------------------------------------------------------------------
-# Union type for type hints
-# ---------------------------------------------------------------------------
-
-CTModelState = Union[CTCoupledState, CTDecoupledState]

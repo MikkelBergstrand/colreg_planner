@@ -417,12 +417,8 @@ class VOPolicyKuwata(BasePolicy):
                 return CVAction(vn=float(best[0]), ve=float(best[1]))
 
             # --- 4. Partition threats ----------------------------------------
-            # hard_threats: STAND_ON — no relaxation, kept as hard constraints
-            # soft_threats: all others — relax primary d_pass → d_coll
-            hard_threats = [
-                (obs, cfg) for (obs, _), cfg in zip(threats, configs)
-                if not cfg.has_fallback
-            ]
+            # soft_threats: all but STAND_ON — relax primary d_pass → d_coll.
+            # STAND_ON threats keep their primary cones (cones_hard_coll below).
             soft_threats = [
                 (obs, cfg) for (obs, _), cfg in zip(threats, configs)
                 if cfg.has_fallback

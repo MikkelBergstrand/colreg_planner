@@ -58,7 +58,6 @@ except ImportError:
 
 try:
     from shapely import from_wkb, get_parts
-    from shapely.geometry import Polygon, MultiPolygon, LineString, MultiLineString
     _SHAPELY_OK = True
 except ImportError:
     _SHAPELY_OK = False
@@ -112,82 +111,6 @@ class ChartBackground:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-
-def load_land_polygons(
-    fgdb_path: str | Path,
-    bbox: tuple[float, float, float, float],
-    source_crs: int = 32632,
-    target_crs: int = 32632,
-):
-    """Load land-area polygons from the FGDB within a bounding box.
-
-    Parameters
-    ----------
-    fgdb_path  : path to the .gdb directory
-    bbox       : (x_min, y_min, x_max, y_max) in *source_crs*
-    source_crs : EPSG code of the bbox coordinates (default: 32632 = UTM 32N)
-    target_crs : EPSG code for returned polygon coordinates (default: 32632)
-
-    Returns
-    -------
-    shapely.geometry.MultiPolygon, or None if no land features found.
-    """
-    if not (_PYOGRIO_OK and _PYPROJ_OK and _SHAPELY_OK):
-        warnings.warn(
-            "pyogrio / pyproj / shapely required for load_land_polygons().",
-            RuntimeWarning, stacklevel=2,
-        )
-        return None
-
-    from shapely.ops import unary_union
-
-    # Transform bbox to FGDB native CRS (25833) for spatial query
-    to_fgdb = Transformer.from_crs(source_crs, 25833, always_xy=True)
-    x_min, y_min = to_fgdb.transform(bbox[0], bbox[1])
-    x_max, y_max = to_fgdb.transform(bbox[2], bbox[3])
-    fgdb_bbox = (x_min, y_min, x_max, y_max)
-
-    available = {str(n) for n, _ in pyogrio.list_layers(str(fgdb_path))}
-    if "landareal" not in available:
-        warnings.warn("Layer 'landareal' not found in FGDB.", RuntimeWarning, stacklevel=2)
-        return None
-
-    try:
-        _, _, geom_wkb, _ = pyogrio.raw.read(
-            str(fgdb_path), layer="landareal", bbox=fgdb_bbox,
-        )
-    except Exception as exc:
-        warnings.warn(f"Error reading landareal: {exc}", RuntimeWarning, stacklevel=2)
-        return None
-
-    if geom_wkb is None or len(geom_wkb) == 0:
-        return None
-
-    # Transform coordinates from FGDB CRS to target CRS
-    to_target = Transformer.from_crs(25833, target_crs, always_xy=True)
-
-    def _transform_polygon(poly):
-        coords = np.array(poly.exterior.coords)
-        xs, ys = to_target.transform(coords[:, 0], coords[:, 1])
-        return Polygon(np.column_stack([xs, ys]))
-
-    polygons = []
-    for geom in from_wkb(geom_wkb):
-        if geom is None or geom.is_empty:
-            continue
-        parts = get_parts(geom) if geom.geom_type == "MultiPolygon" else [geom]
-        for part in parts:
-            if part is not None and not part.is_empty:
-                polygons.append(_transform_polygon(part))
-
-    if not polygons:
-        return None
-
-    result = unary_union(polygons)
-    if result.geom_type == "Polygon":
-        return MultiPolygon([result])
-    return result
-
 
 def list_layers(fgdb_path: str | Path) -> list[str]:
     """Return all layer names in the FGDB, sorted alphabetically."""

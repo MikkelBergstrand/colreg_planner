@@ -256,9 +256,9 @@ in both config types. Use 0 (serial) when debugging the rollout.
 The planners use the same mechanism. A `search_dp` own ship in the simulation
 gets a pool sized by `prediction.parallel_workers` (`auto`: one worker per
 plan rollout, at most CPU cores − 1), and `PredictionService.evaluate_manoeuvres`
-/ `build_problem` run on the predictor's pool when the service config sets
-`interaction.parallel_workers` (default 0 there). Plans and PDDL facts are the
-same either way.
+runs on the predictor's pool when the service config sets
+`interaction.parallel_workers` (default 0 there). Results are the same either
+way.
 
 ## Planner API
 
@@ -299,54 +299,6 @@ COLREGs) instead of estimated, and the hypotheses only vary over the other
 vessels. `service.evaluate_manoeuvre(own_id, course_change_deg, speed_factor,
 duration_s)` predicts the closest approaches if the own ship starts that
 manoeuvre now, with every other vessel reacting to it, under each hypothesis.
-
-### PDDL planning
-
-`src/planner_api/pddl.py` turns the current prediction into a temporal PDDL
-problem (PDDL 2.2, with timed initial literals) for the own ship and solves it
-with [Unified Planning](https://github.com/aiplan4eu/unified-planning), using
-Tamer by default or Aries:
-
-```bash
-pip install -e ".[planning]"
-python scripts/pddl_planning_demo.py                       # own ship stand-on, target never gives way
-python scripts/pddl_planning_demo.py --scenario give_way   # own ship gives way
-python scripts/pddl_planning_demo.py --engine aries
-```
-
-```python
-from src.planner_api.pddl import build_problem
-
-service = PredictionService.from_config(cfg, dt=2.0, own_id="ego", top_k=4)
-service.step(observations)
-problem = build_problem(service, d_pass=150.0)
-problem.write_pddl("outputs/pddl")       # domain.pddl, problem.pddl
-result = problem.solve()                 # {"status", "plan", "manoeuvre", "start_s", "latest_start_s"}
-
-# Plan B while a give-way vessel is still trusted: what if it never gives way?
-plan_b = build_problem(service, assume_non_responsive=["target"]).solve()
-```
-
-The domain encodes the COLREGs rules as action preconditions: give way with a
-substantial alteration that is not to port (Rules 8, 14–16), stand on while the
-give-way vessel is trusted (Rule 17(a)(i)), act when it is not (17(a)(ii),
-17(c)), and take best-effort action when no compliant pass is left (17(b)). The
-geometry stays in the predictor: each candidate manoeuvre in
-`src/planner_api/manoeuvres.py` is rolled out at several start delays against
-the likely hypotheses. The outcomes enter the problem as facts, and as timed
-initial literals that close each manoeuvre's window after its latest
-verified start. For a contingency plan (`assume_non_responsive`), a timed
-literal also grants the stand-on own ship permission to act once the other
-vessel should visibly have started giving way. See the module docstring for
-the full list. The facts describe the situation now, so regenerate and
-re-solve the problem at each replanning point; the demo does this whenever
-the facts change.
-
-Tamer solves these problems in about 0.02 s and proves unsolvable ones
-quickly. Aries finds plans in about 0.1 s, but cannot prove a temporal problem
-unsolvable and runs until its timeout (2 s by default), which `solve()` hits
-on purpose while trying the manoeuvres in order of preference. Building the
-problem (the manoeuvre rollouts) takes about 0.5 s.
 
 ## Parameters
 
@@ -391,7 +343,6 @@ scripts/
   run_simulation.py      simulations (scenarios/simulation/)
   run_AIS.py             real AIS playback, figures and metrics (scenarios/real/)
   planner_api_demo.py    planner API on a synthetic encounter
-  pddl_planning_demo.py  PDDL generation + LPG planning on a synthetic encounter
   process_raw_ais.py     raw AIS -> encounter windows
   build_nominal_library.py
   tools/                 encounter browsing, sea-chart cropping, deviation analysis, profiling

@@ -981,7 +981,6 @@ def main() -> None:
                     north=vi.state.north, east=vi.state.east,
                     psi=vi.state.heading, speed=vi.state.speed,
                 ),
-                intent_label  = vi.intent.name,
                 display_id    = display_names[vi.vessel_id],
             )
             for vi in config.vessels

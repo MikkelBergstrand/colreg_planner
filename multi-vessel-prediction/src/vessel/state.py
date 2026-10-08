@@ -84,11 +84,6 @@ class VesselState:
     def ve(self) -> float:
         return self.speed * np.sin(self.psi)
 
-    @property
-    def heading_vec(self) -> np.ndarray:
-        return np.array([np.cos(self.psi), np.sin(self.psi)])
-
-
 @dataclass
 class CTAction:
     """Action for constant-turn kinematic models.
