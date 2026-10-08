@@ -84,7 +84,7 @@ keeps an encounter's roles until the vessels have opened to d_u, and once
 they are past each other the rules no longer bind the return to track.
     cost = sum_h w_h (safety_h + colregs_h) + risk_weight * max_{h: w_h >= risk_floor} safety_h
          + w_dev * mean_t (cross-track offset(t) / d_pass)^2
-         + w_effort * sum_edges (|offset| / 60 deg + [slowed or stopped])
+         + w_effort * sum_edges (|offset| / 60 deg + [slowed or stopped]) * edge_s / effort_ref_s
          + w_time * (time lost along the route over the horizon) / time_ref_s
          + w_switch * [first edge differs from the action under way, which
                        started less than edge_s ago]
@@ -149,6 +149,7 @@ class SearchWeights:
     w_switch:    float = 2.0
     w_time:      float = 1.0
     time_ref_s:  float = 15.0   # time lost is charged per this many seconds, whatever edge_s is
+    effort_ref_s: float = 15.0  # an edge's effort counts in full when held this long, whatever edge_s is
     risk_weight: float = 1.0
     risk_floor:  float = 0.1    # hypotheses below this weight stay out of the worst case
 
@@ -418,7 +419,10 @@ class ManoeuvreSearchPlanner:
                 - (s.north - own_cfg.origin_north) * math.sin(psi0)
                 for s in own_tr
             ])
-            effort = sum(abs(a.course_offset) / 60.0 + (a.speed_factor < 1.0) for a in actions)
+            # Per edge, in proportion to how long it is held, so the effort of
+            # an alteration does not depend on the step length.
+            effort = (sum(abs(a.course_offset) / 60.0 + (a.speed_factor < 1.0) for a in actions)
+                      * c.edge_s / w.effort_ref_s)
             # Time lost: along-route progress short of sailing the nominal
             # velocity for the whole horizon, in seconds at the nominal speed.
             end = own_tr[-1]

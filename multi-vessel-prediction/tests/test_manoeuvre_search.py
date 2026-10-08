@@ -306,6 +306,16 @@ def test_time_cost_does_not_depend_on_edge_length():
     assert by_actions[(stop, stop)].terms["time"] == pytest.approx(1.0, abs=0.1)
 
 
+def test_effort_scales_with_how_long_an_alteration_is_held():
+    """Effort counts per effort_ref_s (15 s): two 60-degree edges cost 2 at
+    15 s steps and 1 at 7.5 s steps."""
+    stbd_60 = next(a for a in DEFAULT_ACTIONS if a.name == "stbd_60")
+    for edge_s, expected in ((15.0, 2.0), (7.5, 1.0)):
+        planner, states, graph, _ = _planner(edge_s=edge_s)
+        by_actions = {p.actions: p for p in planner.plan(states, graph, t=0.0).ranked}
+        assert by_actions[(stbd_60, stbd_60)].terms["effort"] == pytest.approx(expected)
+
+
 def test_give_way_stop_scenario_geometry():
     planner, states, graph, config = _planner(GIVE_WAY_STOP)
     roles = dict(graph.get_roles(0))
