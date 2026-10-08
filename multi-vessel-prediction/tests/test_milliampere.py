@@ -428,3 +428,14 @@ def test_adapter_dp_ref_start_places_reference():
     ad.init(InitialState(speed=1.0, heading=0.0))
     ad.step(DPAction(d_north=0.5, d_east=0.0, psi_ref=0.0, ref_start=(10.0, -2.0, 0.0)), 0.5)
     np.testing.assert_allclose(ad.dp_reference, [10.5, -2.0, 0.0])
+
+
+def test_rollout_speed_response_is_off_by_default():
+    # tau_speed = 0 applies the commanded speed at once; tau_speed > 0 follows
+    # a first-order response, v -> v + (v_cmd - v) * (1 - exp(-dt / tau)).
+    from src.vessel.state import CVAction
+    for tau, expected in ((0.0, 0.0), (4.0, 1.5 * math.exp(-1.0 / 4.0))):
+        ad = build_adapter("ct_decoupled_ar", 1.0, k_psi=0.1, tau_speed=tau)
+        ad.init(InitialState(speed=1.5, heading=0.0))
+        st = ad.step(CVAction(vn=0.0, ve=0.0), 1.0)                 # stop command
+        assert st.speed == pytest.approx(expected)

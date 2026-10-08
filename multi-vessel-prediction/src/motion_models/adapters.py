@@ -7,6 +7,8 @@ state back to the standard VesselState.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from src.vessel.state import InitialState, VesselState, CTAction, CVAction, DPAction, wrap_angle
@@ -313,16 +315,23 @@ class AngularRateWrapper(BaseSimModel):
     k_psi : float
         Proportional gain [1/s].  Higher values track heading faster but may
         overshoot in models with turn-rate lag (e.g. Viknes).
+    tau_speed : float
+        Time constant of a first-order speed response [s]: each step the speed
+        moves toward the commanded speed by 1 - exp(-dt / tau_speed) of the
+        difference. 0 (default) applies the commanded speed at once.
     """
 
-    def __init__(self, inner: BaseSimModel, k_psi: float = 0.1) -> None:
-        self._inner = inner
-        self.k_psi  = k_psi
-        self._psi:  float = 0.0
+    def __init__(self, inner: BaseSimModel, k_psi: float = 0.1, tau_speed: float = 0.0) -> None:
+        self._inner    = inner
+        self.k_psi     = k_psi
+        self.tau_speed = tau_speed
+        self._psi:   float = 0.0
+        self._speed: float = 0.0
 
     def init(self, initial: InitialState) -> VesselState:
-        state      = self._inner.init(initial)
-        self._psi  = state.psi
+        state       = self._inner.init(initial)
+        self._psi   = state.psi
+        self._speed = state.speed
         return state
 
     def step(self, action: CVAction, dt: float) -> VesselState:
@@ -332,9 +341,13 @@ class AngularRateWrapper(BaseSimModel):
         # When stopped, preserve current heading instead of snapping to arctan2(0,0)=0
         psi_des   = action.heading if action.speed > 1e-9 else self._psi
         turn_rate = self.k_psi * wrap_angle(psi_des - self._psi)
-        ct_action = CTAction(speed=action.speed, turn_rate=turn_rate)
-        state     = self._inner.step(ct_action, dt)
-        self._psi = state.psi
+        speed     = action.speed
+        if self.tau_speed > 0.0:
+            speed = self._speed + (speed - self._speed) * (1.0 - math.exp(-dt / self.tau_speed))
+        ct_action = CTAction(speed=speed, turn_rate=turn_rate)
+        state       = self._inner.step(ct_action, dt)
+        self._psi   = state.psi
+        self._speed = speed
         return state
 
 
@@ -342,7 +355,8 @@ class AngularRateWrapper(BaseSimModel):
 # Adapter factory
 # ---------------------------------------------------------------------------
 
-def build_adapter(model_type: str, dt: float = 1.0, *, k_psi: float) -> BaseSimModel:
+def build_adapter(model_type: str, dt: float = 1.0, *, k_psi: float,
+                  tau_speed: float = 0.0) -> BaseSimModel:
     """Instantiate a BaseSimModel by name.
 
     model_type must be one of the strings accepted by run_simulation's sim_model
@@ -358,11 +372,11 @@ def build_adapter(model_type: str, dt: float = 1.0, *, k_psi: float) -> BaseSimM
     if model_type == "viknes":
         return ViknesAdapter(dt=dt)
     if model_type == "ct_coupled_ar":
-        return AngularRateWrapper(CTCoupledAdapter(), k_psi=k_psi)
+        return AngularRateWrapper(CTCoupledAdapter(), k_psi=k_psi, tau_speed=tau_speed)
     if model_type == "ct_decoupled_ar":
-        return AngularRateWrapper(CTDecoupledAdapter(), k_psi=k_psi)
+        return AngularRateWrapper(CTDecoupledAdapter(), k_psi=k_psi, tau_speed=tau_speed)
     if model_type == "viknes_ar":
-        return AngularRateWrapper(ViknesAdapter(dt=dt), k_psi=k_psi)
+        return AngularRateWrapper(ViknesAdapter(dt=dt), k_psi=k_psi, tau_speed=tau_speed)
     if model_type == "milliampere":
         return MilliAmpereAdapter()
     raise ValueError(

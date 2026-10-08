@@ -105,6 +105,7 @@ class VOAgentConfig:
     head_on_rvo_weight: float           = 0.5
     rollout_model:      str             = "ct_decoupled_ar"
     k_psi:              float           = 0.1
+    tau_speed:          float           = 0.0     # rollout speed response time constant [s]; 0 = instant
     los_lookahead:      float           = 100.0
     course_budget_deg:  float           = 70.0      # vo_analytic: largest course alteration from nominal [deg]; ~60 recommended, 180 = no limit
     achievable_ratio:   float           = 1       # vo_analytic: fraction alpha of the best reachable passing distance demanded when d_pass is out of reach; keep slightly below 1 (e.g. 0.99)
@@ -318,7 +319,7 @@ def vo_rollout(
             policy._v_prev = np.array([state.vn, state.ve], dtype=float)
         policies[vid] = policy
 
-        adapter = build_adapter(cfg.rollout_model, dt, k_psi=cfg.k_psi)
+        adapter = build_adapter(cfg.rollout_model, dt, k_psi=cfg.k_psi, tau_speed=cfg.tau_speed)
         adapter.init(InitialState(
             north   = state.north,
             east    = state.east,
