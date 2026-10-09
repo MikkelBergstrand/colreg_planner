@@ -113,24 +113,24 @@ import numpy as np
 import yaml
 
 
-from src.vessel.state import VesselState
-from src.visualization.live_viz import VesselMeta, SimInfo, VizConfig, LiveVisualizer, save_responding_plot
-from src.visualization.multi_panel import PanelSnapshot, save_multi_panel_trajectory_plot
-from src.prediction.predictor import VesselPredictor
-from src.prediction.parallel import resolve_workers
-from src.prediction.vo_rollout import VOAgentConfig
-from src.ais.windows import traj_limits, window_to_frames
+from colregs_planner.vessel.state import VesselState
+from colregs_planner.visualization.live_viz import VesselMeta, SimInfo, VizConfig, LiveVisualizer, save_responding_plot
+from colregs_planner.visualization.multi_panel import PanelSnapshot, save_multi_panel_trajectory_plot
+from colregs_planner.prediction.predictor import VesselPredictor
+from colregs_planner.prediction.parallel import resolve_workers
+from colregs_planner.prediction.vo_rollout import VOAgentConfig
+from colregs_planner.ais.windows import traj_limits, window_to_frames
 
 try:
-    from src.nominal.library import TrackLibrary
-    from src.nominal.retriever import NominalRetriever
+    from colregs_planner.nominal.library import TrackLibrary
+    from colregs_planner.nominal.retriever import NominalRetriever
     _NOMINAL_AVAILABLE = True
 except ImportError:
     _NOMINAL_AVAILABLE = False
 
 try:
-    from src.seachart.loader import find_chart, load_chart_background
-    from src.visualization.map_background import render_chart_background, set_water_facecolor
+    from colregs_planner.seachart.loader import find_chart, load_chart_background
+    from colregs_planner.visualization.map_background import render_chart_background, set_water_facecolor
     _SEACHART_AVAILABLE = True
 except ImportError:
     _SEACHART_AVAILABLE = False
@@ -194,7 +194,7 @@ def _build_predictor(
 
     if nominal_cfg.get("enabled", False):
         if not _NOMINAL_AVAILABLE:
-            print("  Warning: nominal layer requested but src.nominal could not be imported.")
+            print("  Warning: nominal layer requested but colregs_planner.nominal could not be imported.")
         else:
             lib_path = _ROOT / nominal_cfg["library_path"]
             if lib_path.exists():

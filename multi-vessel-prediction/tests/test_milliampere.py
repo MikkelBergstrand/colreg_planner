@@ -15,12 +15,12 @@ import numpy as np
 import pytest
 import yaml
 
-from src.motion_models.adapters import MilliAmpereAdapter, build_adapter
-from src.motion_models.milliampere_model import MilliAmpereSimulator, _rot, _ssa
-from src.policies.predictor_dp import PredictorDPPolicy
-from src.scenario_config import load_config
-from src.vessel.encounter import EncounterType, _OVERTAKING_LATERAL, _target_init
-from src.vessel.state import CTAction, CVAction, DPAction, InitialState, VesselState, wrap_angle
+from colregs_planner.motion_models.adapters import MilliAmpereAdapter, build_adapter
+from colregs_planner.motion_models.milliampere_model import MilliAmpereSimulator, _rot, _ssa
+from colregs_planner.policies.predictor_dp import PredictorDPPolicy
+from colregs_planner.scenario_config import load_config
+from colregs_planner.vessel.encounter import EncounterType, _OVERTAKING_LATERAL, _target_init
+from colregs_planner.vessel.state import CTAction, CVAction, DPAction, InitialState, VesselState, wrap_angle
 
 REPO = Path(__file__).resolve().parents[1]
 MA_SCENARIOS = sorted((REPO / "scenarios/simulation/milliampere").glob("*.yaml"))
@@ -123,7 +123,7 @@ def test_dp_with_fixed_reference_is_litampere_law():
     eta_ref = np.array([4.0, -2.0, 0.6])
 
     # One inner step of step_dp against an rk4 step under liteAmpere's tau.
-    from src.motion_models.milliampere_model import rk4
+    from colregs_planner.motion_models.milliampere_model import rk4
     tau = _litampere_dp_tau(sim, s.xx.copy(), eta_ref)
     expected = rk4(s.xx.copy(), lambda x: sim.model.derivative(x, tau), sim.inner_dt)
     got = sim.step_dp(s, eta_ref, np.zeros(3), sim.inner_dt)
@@ -375,7 +375,7 @@ def test_predictor_dp_follows_one_step_prediction():
     path = REPO / "scenarios/simulation/milliampere/head_on.yaml"
     config, vcfgs, _, pred = load_config(path)
 
-    from src.policies import predictor_dp as mod
+    from colregs_planner.policies import predictor_dp as mod
     seen = []
     orig = mod.PredictorDPPolicy.set_predicted_step
 
@@ -433,7 +433,7 @@ def test_adapter_dp_ref_start_places_reference():
 def test_rollout_speed_response_is_off_by_default():
     # tau_speed = 0 applies the commanded speed at once; tau_speed > 0 follows
     # a first-order response, v -> v + (v_cmd - v) * (1 - exp(-dt / tau)).
-    from src.vessel.state import CVAction
+    from colregs_planner.vessel.state import CVAction
     for tau, expected in ((0.0, 0.0), (4.0, 1.5 * math.exp(-1.0 / 4.0))):
         ad = build_adapter("ct_decoupled_ar", 1.0, k_psi=0.1, tau_speed=tau)
         ad.init(InitialState(speed=1.5, heading=0.0))

@@ -1,5 +1,5 @@
 """
-The parallel rollout path (src/prediction/parallel.py) must give exactly the
+The parallel rollout path (colregs_planner/prediction/parallel.py) must give exactly the
 same trajectories as the serial one.
 
 Run with pytest, or directly:  python -m tests.test_parallel
@@ -12,10 +12,10 @@ import math
 
 import pytest
 
-from src.colregs_graph.colregs_classifier import ColregsClassifier
-from src.prediction.parallel import RolloutPool, resolve_workers, submit_rollout
-from src.prediction.vo_rollout import VOAgentConfig, enumerate_and_rollout
-from src.vessel.state import VesselState
+from colregs_planner.colregs_graph.colregs_classifier import ColregsClassifier
+from colregs_planner.prediction.parallel import RolloutPool, resolve_workers, submit_rollout
+from colregs_planner.prediction.vo_rollout import VOAgentConfig, enumerate_and_rollout
+from colregs_planner.vessel.state import VesselState
 
 
 def _scene():
@@ -116,7 +116,7 @@ def test_search_planner_pool_matches_serial():
 
 
 def _service(parallel_workers):
-    from src.planner_api import PredictionService
+    from colregs_planner.planner_api import PredictionService
     service = PredictionService.from_config(
         {"H": 60, "interaction": {"use_responding_filter": True, "top_k_hypotheses": 4,
                                   "parallel_workers": parallel_workers,

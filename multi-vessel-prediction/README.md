@@ -118,7 +118,7 @@ scenario:
 
 `sim_model: milliampere` simulates a vessel with the 3DOF maneuvering model of
 the milliAmpere autonomous ferry and its controllers (ported from liteAmpere
-into `src/motion_models/milliampere_model.py`). How the hull is driven depends
+into `colregs_planner/motion_models/milliampere_model.py`). How the hull is driven depends
 on the vessel's `policy`:
 
 - `predictor_dp`: dynamic positioning on a moving reference. Every step the
@@ -148,7 +148,7 @@ on the vessel's `policy`:
   from the route, manoeuvre effort,
   time lost along the route, and switching away from a manoeuvre less than
   one edge old. Code in
-  `src/planner_api/manoeuvre_search.py`; tune with a per-vessel
+  `colregs_planner/planner_api/manoeuvre_search.py`; tune with a per-vessel
   `search: {depth, edge_s, plan_dt, horizon_s, top_k}` block.
   A vessel being overtaken only costs a collision until the TCPA on the
   route course is below the predictor's `tcpa_threshold`. From then on, the
@@ -237,8 +237,8 @@ the new files.
 To use the predictor in your own code:
 
 ```python
-from src.prediction.predictor import VesselPredictor
-from src.prediction.vo_rollout import VOAgentConfig
+from colregs_planner.prediction.predictor import VesselPredictor
+from colregs_planner.prediction.vo_rollout import VOAgentConfig
 
 predictor = VesselPredictor(dt=2.0, H=300, use_responding_filter=True,
                             default_agent_config=VOAgentConfig(d_pass=100.0))
@@ -248,7 +248,7 @@ for states in stream:                      # dict: vessel id -> VesselState (NED
 ```
 
 The full-horizon rollouts can run in parallel worker processes
-(`src/prediction/parallel.py`), with identical results:
+(`colregs_planner/prediction/parallel.py`), with identical results:
 `prediction.interaction.parallel_workers: N` in the real-data configs,
 `prediction.parallel_workers: N` in the simulation configs, or
 `VesselPredictor(..., parallel_workers=N)`. Live playback gains only when
@@ -267,14 +267,14 @@ way.
 
 ## Planner API
 
-`src/planner_api` wraps the predictor for use as an information source inside
+`colregs_planner/planner_api` wraps the predictor for use as an information source inside
 a larger system, e.g. an AI planner. `PredictionService.step()` runs the full
 predictor cycle once per observation; the `get_*` queries then read the cached
 result and return JSON-serializable dicts, so they can be called as often as
 needed without re-running the prediction or disturbing the responding filters.
 
 ```python
-from src.planner_api import PredictionService, TOOLS, call_tool
+from colregs_planner.planner_api import PredictionService, TOOLS, call_tool
 
 service = PredictionService.from_config("scenarios/real/window_079.yaml",
                                         dt=2.0, ref_lat=REF_LAT, ref_lon=REF_LON)
@@ -307,7 +307,7 @@ manoeuvre now, with every other vessel reacting to it, under each hypothesis.
 
 ### DP reference for an own ship
 
-`ColregsDPPlanner` (`src/planner_api/dp_planner.py`) is the interface for
+`ColregsDPPlanner` (`colregs_planner/planner_api/dp_planner.py`) is the interface for
 running the planner in another vessel system: vessel states in, dynamic
 positioning (DP) reference out. It runs the same pipeline as the simulator's
 `search_dp` own ship: responsiveness estimated from the observations, COLREGs
@@ -315,7 +315,7 @@ roles from the classifier, a manoeuvre search every `replan_s`, and the own
 ship's track along the chosen plan as the DP reference.
 
 ```python
-from src.planner_api import ColregsDPPlanner, Route
+from colregs_planner.planner_api import ColregsDPPlanner, Route
 
 planner = ColregsDPPlanner(
     own_id = "ego",
@@ -342,7 +342,7 @@ on a synthetic head-on encounter.
 ## Parameters
 
 The VO parameters and their defaults are the fields of `VOAgentConfig`
-(`src/prediction/vo_rollout.py`). They are set per vessel in the simulation
+(`colregs_planner/prediction/vo_rollout.py`). They are set per vessel in the simulation
 configs and under `prediction.interaction.agent` in the real-data configs.
 
 | Parameter | Paper | Default | Meaning |
@@ -354,9 +354,9 @@ configs and under `prediction.interaction.agent` in the real-data configs.
 | `k_psi` | `k_ψ` | 0.1 s⁻¹ | turn-rate gain of the rollout motion model (Eq. 20) |
 | `head_on_rvo_weight` | | 0.5 | share of the head-on maneuver each vessel takes (0.5 = RVO) |
 
-The responding filter (`src/prediction/responding_filter.py`) uses
+The responding filter (`colregs_planner/prediction/responding_filter.py`) uses
 `p(r₀=R) = 0.99` and `σ_ψ = 5°`. The COLREGs classifier
-(`src/colregs_graph/colregs_classifier.py`) uses `DCPA_max = 1500 m`. The nominal
+(`colregs_planner/colregs_graph/colregs_classifier.py`) uses `DCPA_max = 1500 m`. The nominal
 predictor's `β`, search radius and history length are set under
 `prediction.nominal` in the real-data configs.
 
@@ -369,7 +369,7 @@ predictor's `β`, search radius and history length are set under
   distance that can be reached within `course_budget_deg`. When several vessels
   conflict, it reduces all passing distances together, the most for encounters
   furthest ahead in time. Speed is never changed, so every maneuver is a course
-  change. See `solve_vo_achievable` in `src/policies/vo_analytic.py`.
+  change. See `solve_vo_achievable` in `colregs_planner/policies/vo_analytic.py`.
 - **STAND-ON.** A responsive stand-on vessel still avoids a collision at the last
   moment (COLREGs Rule 17(b)), with a small passing distance `d_coll` =
   0.1·`d_pass`. In the paper, STAND-ON has no constraint. Non-responsive vessels
@@ -386,7 +386,7 @@ scripts/
   process_raw_ais.py     raw AIS -> encounter windows
   build_nominal_library.py
   tools/                 encounter browsing, sea-chart cropping, deviation analysis, profiling
-src/
+colregs_planner/        the package
   nominal/               nominal layer: track library and nearest-neighbor retrieval (Sec. III)
   colregs_graph/         COLREGs classifier and interaction graph (Sec. IV-A, IV-B)
   prediction/            responding filter, VO rollout, VesselPredictor (Sec. IV-C, V)

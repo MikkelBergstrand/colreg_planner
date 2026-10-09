@@ -25,4 +25,4 @@ test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["colregs_planner*"]

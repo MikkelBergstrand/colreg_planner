@@ -34,10 +34,10 @@ from pathlib import Path
 
 import yaml
 
-from src.colregs_graph.colregs_classifier import ColregsClassifier
-from src.prediction.vo_rollout import VOAgentConfig
-from src.vessel.encounter import _OVERTAKING_LATERAL
-from src.visualization.live_viz import VizConfig
+from colregs_planner.colregs_graph.colregs_classifier import ColregsClassifier
+from colregs_planner.prediction.vo_rollout import VOAgentConfig
+from colregs_planner.vessel.encounter import _OVERTAKING_LATERAL
+from colregs_planner.visualization.live_viz import VizConfig
 
 REPO     = Path(__file__).resolve().parents[2]
 SRC_DIR  = REPO / "scenarios/simulation"

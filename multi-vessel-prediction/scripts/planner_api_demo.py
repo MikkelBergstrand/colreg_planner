@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.planner_api import TOOLS, PredictionService, call_tool
+from colregs_planner.planner_api import TOOLS, PredictionService, call_tool
 
 DT = 2.0
 

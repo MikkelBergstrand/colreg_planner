@@ -25,8 +25,8 @@ import time
 
 import numpy as np
 
-from src.vessel.state import VesselState
-from src.prediction.vo_rollout import vo_rollout, VOAgentConfig
+from colregs_planner.vessel.state import VesselState
+from colregs_planner.prediction.vo_rollout import vo_rollout, VOAgentConfig
 
 
 # ---------------------------------------------------------------------------

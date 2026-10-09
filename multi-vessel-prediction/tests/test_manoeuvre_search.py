@@ -1,5 +1,5 @@
 """
-Tests for the manoeuvre-search planner (src/planner_api/manoeuvre_search.py),
+Tests for the manoeuvre-search planner (colregs_planner/planner_api/manoeuvre_search.py),
 the search_dp policy, and their wiring into the simulation and the plot.
 """
 
@@ -16,15 +16,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src.colregs_graph.colregs_classifier import ColregsClassifier
-from src.colregs_graph.colregs_graph import VesselRole
-from src.planner_api.manoeuvre_search import (
+from colregs_planner.colregs_graph.colregs_classifier import ColregsClassifier
+from colregs_planner.colregs_graph.colregs_graph import VesselRole
+from colregs_planner.planner_api.manoeuvre_search import (
     DEFAULT_ACTIONS, ManoeuvreSearchPlanner, SearchAction, SearchConfig, interpolate_track,
 )
-from src.policies.search_dp import SearchDPPolicy
-from src.prediction.vo_rollout import rank_hypotheses
-from src.scenario_config import build_vo_agent_config, load_config
-from src.vessel.state import Intent, VesselState
+from colregs_planner.policies.search_dp import SearchDPPolicy
+from colregs_planner.prediction.vo_rollout import rank_hypotheses
+from colregs_planner.scenario_config import build_vo_agent_config, load_config
+from colregs_planner.vessel.state import Intent, VesselState
 
 REPO = Path(__file__).resolve().parents[1]
 HEAD_ON = REPO / "scenarios/simulation/milliampere/head_on.yaml"
@@ -269,7 +269,7 @@ GIVE_WAY_STOP = REPO / "scenarios/simulation/milliampere/give_way_stop.yaml"
 
 def test_fixed_plan_stop_holds_vessel_in_rollout():
     from dataclasses import replace
-    from src.prediction.vo_rollout import VOAgentConfig, vo_rollout
+    from colregs_planner.prediction.vo_rollout import VOAgentConfig, vo_rollout
 
     seq = np.vstack([np.zeros((10, 2)), np.tile([1.5, 0.0], (10, 1))])
     cfg = replace(VOAgentConfig(nominal_psi=0.0, ref_speed=1.5, origin_north=0.0,
@@ -382,7 +382,7 @@ def test_stopping_never_turns_the_ship_round():
     # Regression: the hull overshoots a planned stop and DP backs it up. That
     # sternway used to be reported as the ship pointing astern, the next plan
     # started from that heading, and DP turned the hull through 180 deg.
-    from src.motion_models import adapters
+    from colregs_planner.motion_models import adapters
 
     headings = []
     orig = adapters.MilliAmpereAdapter.step
@@ -459,7 +459,7 @@ def test_no_overtaking_cost_once_the_offset_track_passes_clear():
 
 
 def test_search_dp_overtakes_inside_the_tcpa_threshold_and_passes_clear():
-    from src.colregs_graph.colregs_classifier import _compute_dcpa_tcpa
+    from colregs_planner.colregs_graph.colregs_classifier import _compute_dcpa_tcpa
     (traj, *_), log, config, vcfgs, _ = _simulate(OVERTAKING_AHEAD, "search_dp")
     ego, tgt = traj["ego"], traj["target_1"]
     d_pass, tcpa_max = vcfgs["ego"]["d_pass"], vcfgs["ego"]["tcpa_threshold"]
@@ -528,7 +528,7 @@ def test_search_dp_multi_crossing_give_way_passes_clear():
 def test_give_way_cost_lapses_once_the_route_course_passes_clear():
     """Holding course while give-way is only penalised while resuming the
     route course would pass inside d_pass of a give-way vessel."""
-    from src.colregs_graph.colregs_classifier import _compute_dcpa_tcpa
+    from colregs_planner.colregs_graph.colregs_classifier import _compute_dcpa_tcpa
     planner, states, graph, _ = _planner(MULTI_CROSSING_GIVE_WAY)
     d_pass = planner.configs["ego"].d_pass
     nominal = next(a for a in DEFAULT_ACTIONS if a.is_nominal)
@@ -551,7 +551,7 @@ def test_give_way_cost_lapses_once_the_route_course_passes_clear():
 def test_head_on_cost_lapses_once_the_route_course_passes_clear():
     """Not turning to starboard while head-on is only penalised while
     resuming the route course would pass inside d_pass of the vessel."""
-    from src.colregs_graph.colregs_classifier import _compute_dcpa_tcpa
+    from colregs_planner.colregs_graph.colregs_classifier import _compute_dcpa_tcpa
     planner, states, graph, _ = _planner()
     assert dict(graph.get_roles(0)) == {1: VesselRole.HEAD_ON}
     d_pass = planner.configs["ego"].d_pass

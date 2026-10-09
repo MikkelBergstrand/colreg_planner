@@ -605,7 +605,7 @@ def window_to_vessel_states(
     ref_lat, ref_lon : float
         The reference coordinates used (useful for geo-plotting later).
     """
-    from src.vessel.state import VesselState
+    from colregs_planner.vessel.state import VesselState
 
     rs = w["rollout_start_idx"]
 

@@ -1,5 +1,5 @@
 """
-Tests for ColregsDPPlanner (src/planner_api/dp_planner.py): vessel states in,
+Tests for ColregsDPPlanner (colregs_planner/planner_api/dp_planner.py): vessel states in,
 DP reference out, closed loop with an own ship that follows the reference.
 """
 
@@ -9,7 +9,7 @@ import math
 
 import pytest
 
-from src.planner_api import ColregsDPPlanner, DPReference, Route
+from colregs_planner.planner_api import ColregsDPPlanner, DPReference, Route
 
 D_PASS = 30.0
 CONFIG = {"interaction": {"use_responding_filter": True, "top_k_hypotheses": 2,

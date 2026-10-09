@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-from src.nominal.library import TrackLibrary
+from colregs_planner.nominal.library import TrackLibrary
 
 _ROOT = Path(__file__).resolve().parents[2]
 

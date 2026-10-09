@@ -1,6 +1,6 @@
 """
-Tests for the nominal track-library builder (src/nominal/indexer.py) and the
-AIS loading it shares with the encounter pipeline (src/ais/cleaning.py).
+Tests for the nominal track-library builder (colregs_planner/nominal/indexer.py) and the
+AIS loading it shares with the encounter pipeline (colregs_planner/ais/cleaning.py).
 """
 
 from __future__ import annotations
@@ -9,9 +9,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.ais.cleaning import DEFAULT_BOUNDS, load_and_clean
-from src.nominal.indexer import TrackIndexer
-from src.nominal.library import LibraryConfig
+from colregs_planner.ais.cleaning import DEFAULT_BOUNDS, load_and_clean
+from colregs_planner.nominal.indexer import TrackIndexer
+from colregs_planner.nominal.library import LibraryConfig
 
 # Two vessels sailing north at 10 kn, both inside the default area: one in
 # its south-west, one in its north-east.

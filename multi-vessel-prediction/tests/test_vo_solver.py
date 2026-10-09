@@ -1,6 +1,6 @@
 """
 Equivalence tests for the scalar (float-tuple) VO solver in
-src/policies/vo_analytic.py against the frozen numpy implementation in
+colregs_planner/policies/vo_analytic.py against the frozen numpy implementation in
 tests/reference_vo_solver.py.
 
 The two differ only in floating-point evaluation order (numpy's
@@ -22,7 +22,7 @@ import random
 
 import numpy as np
 
-from src.policies import vo_analytic as new
+from colregs_planner.policies import vo_analytic as new
 from tests import reference_vo_solver as ref
 
 TOL = 1e-9

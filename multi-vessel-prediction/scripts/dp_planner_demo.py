@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.planner_api import ColregsDPPlanner, Route
+from colregs_planner.planner_api import ColregsDPPlanner, Route
 
 DT = 0.5
 

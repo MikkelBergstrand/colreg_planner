@@ -7,7 +7,7 @@ Usage
 -----
     python scripts/explore/inspect_seachart.py
 
-After running, update LAYER_ROLES in src/seachart/loader.py with the actual
+After running, update LAYER_ROLES in colregs_planner/seachart/loader.py with the actual
 layer names that correspond to land, coastline, depth contours, and shoals.
 """
 from __future__ import annotations

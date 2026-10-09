@@ -29,8 +29,8 @@ import sys
 from pathlib import Path
 
 
-from src.nominal.indexer import TrackIndexer
-from src.nominal.library import LibraryConfig
+from colregs_planner.nominal.indexer import TrackIndexer
+from colregs_planner.nominal.library import LibraryConfig
 
 
 def main() -> None:

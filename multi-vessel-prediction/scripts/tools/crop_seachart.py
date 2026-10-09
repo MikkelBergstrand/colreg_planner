@@ -19,7 +19,7 @@ import pyogrio
 import shapely
 from pyproj import Transformer
 
-from src.seachart.loader import CHART_CRS, CROPPED_CHART_NAME, FGDB_NAME, LAYER_ROLES
+from colregs_planner.seachart.loader import CHART_CRS, CROPPED_CHART_NAME, FGDB_NAME, LAYER_ROLES
 
 _ROOT = Path(__file__).resolve().parents[2]
 

@@ -16,12 +16,12 @@ import random
 
 import numpy as np
 
-from src.vessel.state import VesselState
-from src.colregs_graph.colregs_classifier import (
+from colregs_planner.vessel.state import VesselState
+from colregs_planner.colregs_graph.colregs_classifier import (
     ColregsClassifier, _REGIONS, _PRIORITY, _geometric_classify,
 )
-from src.colregs_graph.colregs_graph import VesselRole
-from src.vessel.encounter import EncounterType
+from colregs_planner.colregs_graph.colregs_graph import VesselRole
+from colregs_planner.vessel.encounter import EncounterType
 
 
 # ---------------------------------------------------------------------------

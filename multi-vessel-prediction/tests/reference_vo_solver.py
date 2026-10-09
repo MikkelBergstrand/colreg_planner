@@ -1,5 +1,5 @@
 """
-Frozen copy of the numpy-based VO solver from src/policies/vo_analytic.py
+Frozen copy of the numpy-based VO solver from colregs_planner/policies/vo_analytic.py
 (before the scalar rewrite), used as the reference in
 tests/test_vo_solver.py.  Do not edit.
 """
@@ -10,7 +10,7 @@ import math
 
 import numpy as np
 
-from src.policies.vo_common import VOCone
+from colregs_planner.policies.vo_common import VOCone
 
 
 # ---------------------------------------------------------------------------

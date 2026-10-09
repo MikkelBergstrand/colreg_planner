@@ -59,31 +59,31 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from src.vessel.encounter import ScenarioConfig
-from src.vessel.state import VesselInit, VesselState, Intent
-from src.vessel.base import BaseSimModel, BasePolicy, Vessel
-from src.motion_models.adapters import build_adapter
-from src.policies.constant import (
+from colregs_planner.vessel.encounter import ScenarioConfig
+from colregs_planner.vessel.state import VesselInit, VesselState, Intent
+from colregs_planner.vessel.base import BaseSimModel, BasePolicy, Vessel
+from colregs_planner.motion_models.adapters import build_adapter
+from colregs_planner.policies.constant import (
     ConstantVelocityPolicy, ConstantTurnPolicy, FixedCommandPolicy,
 )
-from src.policies.vo_analytic import NominalLOSPolicy
-from src.policies.cto import CTOPolicy
-from src.policies.predictor_dp import PredictorDPPolicy
-from src.policies.search_dp import SearchDPPolicy
-from src.planner_api.manoeuvre_search import (
+from colregs_planner.policies.vo_analytic import NominalLOSPolicy
+from colregs_planner.policies.cto import CTOPolicy
+from colregs_planner.policies.predictor_dp import PredictorDPPolicy
+from colregs_planner.policies.search_dp import SearchDPPolicy
+from colregs_planner.planner_api.manoeuvre_search import (
     ManoeuvreSearchPlanner, SearchConfig, interpolate_track,
 )
-from src.colregs_graph.colregs_graph import apply_responsiveness
-from src.colregs_graph.colregs_classifier import ColregsClassifier
-from src.prediction.parallel import RolloutPool, resolve_workers
-from src.prediction.responding_filter import RespondingFilter
-from src.prediction.vo_rollout import (
+from colregs_planner.colregs_graph.colregs_graph import apply_responsiveness
+from colregs_planner.colregs_graph.colregs_classifier import ColregsClassifier
+from colregs_planner.prediction.parallel import RolloutPool, resolve_workers
+from colregs_planner.prediction.responding_filter import RespondingFilter
+from colregs_planner.prediction.vo_rollout import (
     vo_rollout, VOAgentConfig, enumerate_and_rollout, make_vo_policy, nominal_1step,
 )
-from src.visualization.live_viz import (
+from colregs_planner.visualization.live_viz import (
     PlanOverlay, VesselMeta, SimInfo, VizConfig, run_live, save_responding_plot, VESSEL_COLORS,
 )
-from src.scenario_config import PredictionConfig, build_vo_agent_config, load_config
+from colregs_planner.scenario_config import PredictionConfig, build_vo_agent_config, load_config
 
 
 # ---------------------------------------------------------------------------
@@ -599,7 +599,7 @@ def simulate_scenario(
     the vessel's DP reference follows the chosen plan. If plan_log is given,
     it receives {vessel_id: SearchDPPolicy}; the policies keep every plan made.
     """
-    from src.colregs_graph.colregs_graph import ColregsGraph as _CG
+    from colregs_planner.colregs_graph.colregs_graph import ColregsGraph as _CG
     rng = np.random.default_rng(config.seed)
 
     vessels: list[Vessel] = []

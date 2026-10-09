@@ -27,13 +27,13 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 
-from src.ais.windows import traj_limits, window_to_frames
-from src.vessel.state import VesselState
-from src.visualization.live_viz import VesselMeta, SimInfo, VizConfig, LiveVisualizer
+from colregs_planner.ais.windows import traj_limits, window_to_frames
+from colregs_planner.vessel.state import VesselState
+from colregs_planner.visualization.live_viz import VesselMeta, SimInfo, VizConfig, LiveVisualizer
 
 try:
-    from src.seachart.loader import find_chart, load_chart_background
-    from src.visualization.map_background import render_chart_background, set_water_facecolor
+    from colregs_planner.seachart.loader import find_chart, load_chart_background
+    from colregs_planner.visualization.map_background import render_chart_background, set_water_facecolor
     _SEACHART_AVAILABLE = True
 except ImportError:
     _SEACHART_AVAILABLE = False

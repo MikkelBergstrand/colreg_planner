@@ -72,8 +72,8 @@ import numpy as np
 import pandas as pd
 
 
-from src.ais.cleaning import load_and_clean as _load_and_clean
-from src.ais.cleaning import resample_track as _resample_track
+from colregs_planner.ais.cleaning import load_and_clean as _load_and_clean
+from colregs_planner.ais.cleaning import resample_track as _resample_track
 
 _DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "Moss Horten Jan 2026 AIS"
 _DEFAULT_OUT = Path(__file__).resolve().parents[1] / "data" / "Moss Horten Feb 2026 AIS" / "processed" / "ais_04.pkl"

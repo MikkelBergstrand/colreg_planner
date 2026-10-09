@@ -41,7 +41,7 @@ import matplotlib.gridspec as gridspec
 import pandas as pd
 
 
-from src.ais.windows import window_to_frames
+from colregs_planner.ais.windows import window_to_frames
 
 _DEFAULT_DATA = Path(__file__).resolve().parents[2] / "handover" / "Moss Horten Feb 2026 AIS" / "processed" / "ais_04.pkl"
 _DEFAULT_REVIEW = Path(__file__).resolve().parents[2] / "data" / "Moss Horten Feb 2026 AIS" / "processed" / "encounter_review.json"
@@ -265,7 +265,7 @@ def _print_summary_table(windows: list[dict], review_state: dict) -> None:
 def _animate_window(w: dict) -> None:
     """Launch the live visualizer for one window."""
     try:
-        from src.visualization.live_viz import (
+        from colregs_planner.visualization.live_viz import (
             VesselMeta, SimInfo, VizConfig, LiveVisualizer,
         )
     except ImportError as e:

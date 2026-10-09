@@ -9,7 +9,7 @@
 # defaults below — copy whichever block you need from here into a scenario's
 # `viz:` section to override it.
 #
-# Defaults come from VizConfig (src/visualization/live_viz.py) unless noted
+# Defaults come from VizConfig (colregs_planner/visualization/live_viz.py) unless noted
 # "AIS-only", which means the key is read directly out of the YAML by
 # scripts/run_AIS.py rather than going through VizConfig — those only apply
 # to run_AIS.py, not run_simulation.py.

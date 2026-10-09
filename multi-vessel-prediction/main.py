@@ -5,7 +5,7 @@
 
 import matplotlib.pyplot as plt
 
-from src.planner_api import PredictionService, call_tool
+from colregs_planner.planner_api import PredictionService, call_tool
 
 DT = 2.0
 
