@@ -48,3 +48,9 @@ test     = ["pytest>=8", "colregs-planner[nominal,ais,sim]"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["colregs_planner*"]
+
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
+publish-url = "https://test.pypi.org/legacy/"
+explicit = true
