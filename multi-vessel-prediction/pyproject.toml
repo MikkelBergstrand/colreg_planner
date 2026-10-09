@@ -1,27 +1,49 @@
 [build-system]
-requires = ["setuptools>=42"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "multi-vessel-prediction"
+name = "colregs-planner"
 version = "0.1.0"
-description = "COLREGs-aware multi-vessel trajectory prediction via interaction hypothesis inference and velocity-obstacle rollout"
+description = "COLREGs-aware multi-vessel trajectory prediction and own-ship manoeuvre planning, with a dynamic-positioning reference as output"
+readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Johannes Robert Skarø" },
+    { name = "Mikkel Bergstrand" },
+]
+keywords = [
+    "COLREGs", "collision avoidance", "maritime", "autonomous ships",
+    "trajectory prediction", "velocity obstacle", "motion planning",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
+# Core: prediction, COLREGs classifier, manoeuvre search and ColregsDPPlanner.
 dependencies = [
     "numpy>=1.26",
     "scipy>=1.11",
-    "pandas>=3.0",
-    "pyarrow>=14",
-    "matplotlib>=3.8",
-    "pyproj>=3.6",
     "PyYAML>=6.0",
-    "h5py>=3.10",
 ]
 
 [project.optional-dependencies]
-seachart = ["pyogrio>=0.7", "shapely>=2.0"]
-plots = ["contextily>=1.5"]
-test = ["pytest>=8"]
+nominal  = ["h5py>=3.10", "pyproj>=3.6"]                       # nominal track library
+ais      = ["pandas>=3.0", "pyarrow>=14", "pyproj>=3.6", "h5py>=3.10"]  # AIS processing, library building
+sim      = ["matplotlib>=3.8"]                                  # simulation configs and plots
+seachart = ["pyogrio>=0.7", "shapely>=2.0", "pyproj>=3.6"]      # sea-chart backgrounds
+plots    = ["matplotlib>=3.8", "contextily>=1.5"]               # map tiles in the real-data plots
+all      = ["colregs-planner[nominal,ais,sim,seachart,plots]"]
+test     = ["pytest>=8", "colregs-planner[nominal,ais,sim]"]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -1,6 +1,7 @@
-# multi-vessel-prediction
+# colregs-planner
 
-Code for **"COLREGs-Aware Multi-Vessel Trajectory Prediction via Interaction
+COLREGs-aware multi-vessel trajectory prediction and own-ship manoeuvre
+planning. Code for **"COLREGs-Aware Multi-Vessel Trajectory Prediction via Interaction
 Hypothesis Inference and Velocity-Obstacle Rollout."**
 
 Each vessel's trajectory is predicted in two layers. A *nominal* layer predicts
@@ -13,7 +14,22 @@ velocity-obstacle (VO) rollout.
 
 ## Install
 
-Python 3.11 or newer.
+Python 3.11 or newer. From PyPI:
+
+```bash
+pip install colregs-planner             # prediction, planner, ColregsDPPlanner
+pip install "colregs-planner[all]"      # plus AIS processing, nominal library, plots, sea charts
+```
+
+Extras: `nominal` (track library), `ais` (AIS processing and library
+building), `sim` (simulation configs and plots), `seachart`, `plots`.
+
+```python
+from colregs_planner import ColregsDPPlanner, Route   # see "DP reference for an own ship"
+```
+
+The simulation and AIS scripts live in the repository, not in the package. To
+run them, install from source:
 
 ```bash
 git clone https://github.com/johannesskaro/multi-vessel-prediction.git
@@ -21,8 +37,7 @@ cd multi-vessel-prediction
 python -m venv venv
 venv\Scripts\activate          # Windows;  source venv/bin/activate on Linux/macOS
 python --version               # must be 3.11 or newer
-pip install -e .
-pip install -e ".[seachart]"   # optional: sea-chart background for the real-data plots
+pip install -e ".[all,test]"
 ```
 
 If `python --version` shows an older version, another Python comes first on your

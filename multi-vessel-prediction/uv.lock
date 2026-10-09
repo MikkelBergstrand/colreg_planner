@@ -242,6 +242,88 @@ wheels = [
 ]
 
 [[package]]
+name = "colregs-planner"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pyyaml" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+
+[package.optional-dependencies]
+ais = [
+    { name = "h5py" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+    { name = "pyproj", version = "3.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "pyproj", version = "3.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+all = [
+    { name = "contextily" },
+    { name = "h5py" },
+    { name = "matplotlib" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+    { name = "pyogrio" },
+    { name = "pyproj", version = "3.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "pyproj", version = "3.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "shapely" },
+]
+nominal = [
+    { name = "h5py" },
+    { name = "pyproj", version = "3.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "pyproj", version = "3.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+plots = [
+    { name = "contextily" },
+    { name = "matplotlib" },
+]
+seachart = [
+    { name = "pyogrio" },
+    { name = "pyproj", version = "3.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "pyproj", version = "3.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "shapely" },
+]
+sim = [
+    { name = "matplotlib" },
+]
+test = [
+    { name = "h5py" },
+    { name = "matplotlib" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+    { name = "pyproj", version = "3.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "pyproj", version = "3.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "colregs-planner", extras = ["nominal", "ais", "sim"], marker = "extra == 'test'" },
+    { name = "colregs-planner", extras = ["nominal", "ais", "sim", "seachart", "plots"], marker = "extra == 'all'" },
+    { name = "contextily", marker = "extra == 'plots'", specifier = ">=1.5" },
+    { name = "h5py", marker = "extra == 'ais'", specifier = ">=3.10" },
+    { name = "h5py", marker = "extra == 'nominal'", specifier = ">=3.10" },
+    { name = "matplotlib", marker = "extra == 'plots'", specifier = ">=3.8" },
+    { name = "matplotlib", marker = "extra == 'sim'", specifier = ">=3.8" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "pandas", marker = "extra == 'ais'", specifier = ">=3.0" },
+    { name = "pyarrow", marker = "extra == 'ais'", specifier = ">=14" },
+    { name = "pyogrio", marker = "extra == 'seachart'", specifier = ">=0.7" },
+    { name = "pyproj", marker = "extra == 'ais'", specifier = ">=3.6" },
+    { name = "pyproj", marker = "extra == 'nominal'", specifier = ">=3.6" },
+    { name = "pyproj", marker = "extra == 'seachart'", specifier = ">=3.6" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "scipy", specifier = ">=1.11" },
+    { name = "shapely", marker = "extra == 'seachart'", specifier = ">=2.0" },
+]
+provides-extras = ["nominal", "ais", "sim", "seachart", "plots", "all", "test"]
+
+[[package]]
 name = "contextily"
 version = "1.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -827,53 +909,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/d2/c6/87409bcb26fb68c39
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b2/d6/de0cc74f8d36976aeca0dd2e9cbf711882ff8e177495115fd82459afdc4d/mercantile-1.2.1-py3-none-any.whl", hash = "sha256:30f457a73ee88261aab787b7069d85961a5703bb09dc57a170190bc042cd023f", size = 14779, upload-time = "2021-04-21T14:42:39.841Z" },
 ]
-
-[[package]]
-name = "multi-vessel-prediction"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "h5py" },
-    { name = "matplotlib" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "pandas" },
-    { name = "pyarrow" },
-    { name = "pyproj", version = "3.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "pyproj", version = "3.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "pyyaml" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-]
-
-[package.optional-dependencies]
-plots = [
-    { name = "contextily" },
-]
-seachart = [
-    { name = "pyogrio" },
-    { name = "shapely" },
-]
-test = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "contextily", marker = "extra == 'plots'", specifier = ">=1.5" },
-    { name = "h5py", specifier = ">=3.10" },
-    { name = "matplotlib", specifier = ">=3.8" },
-    { name = "numpy", specifier = ">=1.26" },
-    { name = "pandas", specifier = ">=3.0" },
-    { name = "pyarrow", specifier = ">=14" },
-    { name = "pyogrio", marker = "extra == 'seachart'", specifier = ">=0.7" },
-    { name = "pyproj", specifier = ">=3.6" },
-    { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "scipy", specifier = ">=1.11" },
-    { name = "shapely", marker = "extra == 'seachart'", specifier = ">=2.0" },
-]
-provides-extras = ["seachart", "plots", "test"]
 
 [[package]]
 name = "numpy"
