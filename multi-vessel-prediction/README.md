@@ -14,7 +14,7 @@ velocity-obstacle (VO) rollout.
 
 ## Install
 
-Python 3.11 or newer. From PyPI:
+Python 3.10 or newer. From PyPI:
 
 ```bash
 pip install colregs-planner             # prediction, planner, ColregsDPPlanner
@@ -36,7 +36,7 @@ git clone https://github.com/johannesskaro/multi-vessel-prediction.git
 cd multi-vessel-prediction
 python -m venv venv
 venv\Scripts\activate          # Windows;  source venv/bin/activate on Linux/macOS
-python --version               # must be 3.11 or newer
+python --version               # must be 3.10 or newer
 pip install -e ".[all,test]"
 ```
 
