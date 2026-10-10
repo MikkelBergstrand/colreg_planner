@@ -1862,7 +1862,12 @@ class LiveVisualizer:
         fps:            Optional[int]              = None,
         policy_debug:   Optional[dict[str, list]] = None,
         colregs_graphs: Optional[list[ColregsGraph]] = None,
+        frame_dt:       Optional[float]            = None,
     ) -> None:
+        """Save the playback to *path*. A .gif plays at the live view's pace:
+        each frame lasts as long as it took to compute and draw plus the live
+        loop's pause *frame_dt* (dt / realtime_factor). Other formats play at
+        a fixed *fps* (default vc.fps)."""
         fps = fps or self.vc.fps
 
         def _update(k):
@@ -1879,6 +1884,24 @@ class LiveVisualizer:
             )
             self.step(states, k, debug_this, colregs_graph=graph_this)
             return []
+
+        if path.lower().endswith(".gif") and frame_dt is not None:
+            import io
+            from PIL import Image
+            frames, durations_ms = [], []
+            for k in range(self.sim_info.n_steps + 1):
+                t_start = time.perf_counter()
+                _update(k)
+                self.fig.canvas.draw()
+                durations_ms.append(1000.0 * (time.perf_counter() - t_start + frame_dt))
+                buf = io.BytesIO()
+                self.fig.savefig(buf, format="png", dpi=120)
+                frames.append(Image.open(buf).convert("RGB"))
+            frames[0].save(path, save_all=True, append_images=frames[1:],
+                           duration=[max(20, round(d)) for d in durations_ms], loop=0)
+            print(f"Animation saved to {path}  "
+                  f"(live pace, {sum(durations_ms) / 1000:.1f} s total)")
+            return
 
         anim = FuncAnimation(
             self.fig, _update,
@@ -1968,7 +1991,8 @@ def run_live(
     if save_path:
         viz.save_animation(trajectories, save_path,
                            policy_debug=policy_debug,
-                           colregs_graphs=colregs_graphs if show_cg else None)
+                           colregs_graphs=colregs_graphs if show_cg else None,
+                           frame_dt=sim_info.dt / speed)
         return
 
     viz.show()
