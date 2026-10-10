@@ -964,9 +964,12 @@ def main() -> None:
             display_names=display_names,
         )
 
+    # The plots leave out ego (V1): the ship under our control knows its own
+    # intent and never acts on the filter's estimate of it.
     if responding_history:
         responding_history = {
             display_names.get(vid, vid): hist for vid, hist in responding_history.items()
+            if vid != "ego"
         }
 
     # Goal markers (viz.goal_markers): each vessel's goal is the straight
