@@ -166,6 +166,21 @@ class SearchWeights:
     risk_floor:  float = 0.1    # hypotheses below this weight stay out of the worst case
 
 
+# Cost terms (ScoredPlan.terms) grouped for display, each group with the
+# SearchWeights fields that scale it. Every term is in exactly one group.
+COST_CATEGORIES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "CPA":     (("safety", "risk"),     ("w_safe", "w_coll", "bow_factor", "risk_weight")),
+    "COLREGs": (("colregs",),           ("w_port", "w_give_way", "w_stand_on")),
+    "Route":   (("deviation", "time"),  ("w_dev", "w_time")),
+    "Effort":  (("effort", "switch"),   ("w_effort", "w_switch")),
+}
+
+
+def cost_by_category(terms: dict[str, float]) -> dict[str, float]:
+    """A plan's cost terms summed per COST_CATEGORIES group."""
+    return {cat: sum(terms.get(t, 0.0) for t in ts) for cat, (ts, _) in COST_CATEGORIES.items()}
+
+
 @dataclass
 class SearchConfig:
     depth:     int   = 2

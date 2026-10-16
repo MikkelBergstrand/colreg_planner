@@ -19,7 +19,8 @@ import pytest
 from colregs_planner.colregs_graph.colregs_classifier import ColregsClassifier
 from colregs_planner.colregs_graph.colregs_graph import VesselRole
 from colregs_planner.planner_api.manoeuvre_search import (
-    DEFAULT_ACTIONS, ManoeuvreSearchPlanner, SearchAction, SearchConfig, interpolate_track,
+    COST_CATEGORIES, DEFAULT_ACTIONS, ManoeuvreSearchPlanner, SearchAction, SearchConfig,
+    SearchWeights, cost_by_category, interpolate_track,
 )
 from colregs_planner.policies.search_dp import SearchDPPolicy
 from colregs_planner.prediction.vo_rollout import rank_hypotheses
@@ -105,6 +106,17 @@ def test_search_is_exhaustive_and_ranked():
     assert costs == sorted(costs)
     assert result.best is result.ranked[0]
     assert len(result.own_traj) == 41
+
+
+def test_cost_categories_cover_every_term_once():
+    planner, states, graph, _ = _planner(horizon_s=40.0)
+    result = planner.plan(states, graph, t=0.0)
+    grouped = [t for terms, _ in COST_CATEGORIES.values() for t in terms]
+    assert sorted(grouped) == sorted(result.best.terms)
+    for plan in result.ranked:
+        assert sum(cost_by_category(plan.terms).values()) == pytest.approx(plan.cost)
+    weight_names = {f for _, names in COST_CATEGORIES.values() for f in names}
+    assert weight_names <= set(vars(SearchWeights()))
 
 
 @pytest.mark.parametrize("probs", [None, {"target_1": 0.99}, {"target_1": 0.0}])

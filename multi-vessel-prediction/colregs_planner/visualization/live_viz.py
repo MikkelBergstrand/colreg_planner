@@ -192,6 +192,20 @@ class PlanOverlay:
 
 
 @dataclass
+class PlanCosts:
+    """Every plan one replan considered, with its cost per category.
+
+    plans   : (label, {category: cost}), cheapest first; the first was chosen
+    weights : category -> [(weight name, value)] for the legend
+    """
+
+    vessel_label: str
+    t:            float
+    plans:        list[tuple[str, dict[str, float]]]
+    weights:      dict[str, list[tuple[str, float]]]
+
+
+@dataclass
 class VizConfig:
     figsize:      tuple[float, float] = (12, 10)
     padding:      float               = 100.0
@@ -206,6 +220,7 @@ class VizConfig:
     debug_viz:          bool  = False  # show velocity/action-space panel
     colregs_graph_viz:  bool  = True   # show COLREGs role graph in separate figure
     responding_panel:   bool  = False  # show responsiveness posterior time-series panel
+    cost_panel:         bool  = True   # search-planner runs: cost of every plan considered, per category
 
     video_enabled: bool = False  # record live playback to outputs/videos/
     video_fps:     int  = 15     # frame rate of the recorded video (independent of on-screen playback speed)
@@ -310,6 +325,7 @@ class VizConfig:
             debug_viz          = debug_viz,
             colregs_graph_viz  = d.get("colregs_graph_viz", True),
             responding_panel   = d.get("responding_panel",  False),
+            cost_panel         = d.get("cost_panel",        True),
             video_enabled      = video.get("enabled",       False),
             video_fps          = video.get("fps",            15),
             video_start_time_s = video.get("start_time_s",   None),
@@ -754,6 +770,68 @@ def _render_debug(
         _draw_vo_debug(ax, frame, color, vessel_id)
 
 
+# Cost categories, in stack order. Hues kept clear of VESSEL_COLORS so a
+# category never reads as a vessel.
+COST_COLORS = ["#6250d6", "#1baf7a", "#eda100", "#e87ba4"]
+
+
+def _draw_cost_panel(ax: plt.Axes, legend_ax: plt.Axes, costs: PlanCosts,
+                     title: bool = True) -> None:
+    """Horizontal stacked bars, one per plan, cheapest at the top, with the
+    legend (category weights) in *legend_ax* above. The axis is clipped at
+    the median plan's cost, so the cheaper half shows its make-up instead of
+    being dwarfed by collision costs; a bar past the edge ends in its total."""
+    ax.clear()
+    legend_ax.clear()
+    legend_ax.set_axis_off()
+    ax.set_facecolor(PANEL_BG)
+    cats = list(costs.weights)
+    totals = np.array([sum(c.values()) for _, c in costs.plans])
+    x_max = max(float(np.median(totals)), 1.5 * totals[0], 1.0)
+    n = len(costs.plans)
+    y = np.arange(n)
+    small = FONT_SIZE * 0.6
+
+    left = np.zeros(n)
+    for cat, color in zip(cats, COST_COLORS):
+        vals = np.array([c.get(cat, 0.0) for _, c in costs.plans])
+        ax.barh(y, vals, left=left, height=0.72, color=color,
+                edgecolor=PANEL_BG, linewidth=1.0, zorder=2)
+        left += vals
+    for i, total in enumerate(totals):
+        if total > x_max:
+            ax.text(x_max * 0.995, i, f"▸ {total:.1f}" if total < 10 else f"▸ {total:.0f}", ha="right", va="center",
+                    fontsize=small, color="white", fontweight="bold", zorder=3)
+        else:
+            ax.text(total + x_max * 0.01, i, f"{total:.1f}", ha="left", va="center",
+                    fontsize=small, color="#3d3d3a", zorder=3)
+
+    ax.set_xlim(0.0, x_max)
+    ax.set_ylim(n - 0.5, -0.5)
+    ax.set_yticks(y)
+    ax.set_yticklabels([lbl for lbl, _ in costs.plans], fontsize=small)
+    ax.get_yticklabels()[0].set_fontweight("bold")
+    ax.axhspan(-0.5, 0.5, color="#2a2a28", alpha=0.07, zorder=1, lw=0)
+    ax.tick_params(axis="x", labelsize=small)
+    ax.tick_params(axis="y", length=0)
+    ax.set_xlabel("Cost", fontsize=small)
+    ax.grid(axis="x", color="#e4e3dd", lw=0.8, zorder=0)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+
+    handles = [
+        Patch(facecolor=color, edgecolor="none",
+              label=f"{cat}: " + ", ".join(f"{name} {val:g}" for name, val in costs.weights[cat]))
+        for cat, color in zip(cats, COST_COLORS)
+    ]
+    legend_ax.legend(handles=handles, loc="lower left", fontsize=small,
+                     title="Category: weights", title_fontsize=small, frameon=False,
+                     alignment="left", borderaxespad=0.0)
+    if title:
+        legend_ax.set_title(f"Plan costs ({costs.vessel_label}, replan t = {costs.t:.0f} s)",
+                            fontsize=FONT_SIZE)
+
+
 def _draw_responding_panel(
     ax:                 plt.Axes,
     responding_history: dict[str, list[float]],
@@ -1140,6 +1218,7 @@ class LiveVisualizer:
         pred_every:           int                                   = 1,
         pred_top_k:           int                                   = 1,
         plan_fn:              Optional[Callable[[int], dict[str, PlanOverlay]]] = None,
+        cost_fn:              Optional[Callable[[int], Optional[PlanCosts]]] = None,
         show_colregs_graph:   bool                                 = False,
         responding_history:   Optional[dict[str, list[float]]]     = None,
         responding_history_t0: float                                = 0.0,
@@ -1183,7 +1262,11 @@ class LiveVisualizer:
             bool(responding_history) and self.vc.responding_under_graph
             and show_cg and not cg_inset
         )
-        n_right          = n_debug + (1 if (show_cg and not cg_inset) else 0) + n_responding
+        show_cost        = cost_fn is not None and self.vc.cost_panel
+        self._cost_fn    = cost_fn if show_cost else None
+        self._cost_shown: Optional[PlanCosts] = None
+        n_right          = (n_debug + (1 if (show_cg and not cg_inset) else 0) + n_responding
+                            + (1 if show_cost else 0))
 
         self._responding_history: Optional[dict[str, list[float]]] = (
             responding_history if show_responding else None
@@ -1223,6 +1306,8 @@ class LiveVisualizer:
             self.colregs_ax: Optional[plt.Axes]  = None
             self._responding_ax: Optional[plt.Axes] = None
             self._resp_under_ax: Optional[plt.Axes] = None
+            self._cost_ax: Optional[plt.Axes] = None
+            self._cost_legend_ax: Optional[plt.Axes] = None
         else:
             # Outer layout is always a single row, so every top-level column
             # (main map, and each side column) spans the exact same vertical
@@ -1242,6 +1327,14 @@ class LiveVisualizer:
             else:
                 ncols         = 2
                 n_stack_right = n_debug + (1 if (show_cg and not cg_inset) else 0) + n_responding
+
+            # The plan-cost panel gets its own full-height column on the far
+            # right; it lists every plan, so it needs the height.
+            has_stack = cg_own_column or n_stack_right > 0
+            if not has_stack:
+                ncols -= 1
+            if show_cost:
+                ncols += 1
 
             fh = max(self.vc.figsize[1], max(n_stack_right, 1) * 4.5)
             # Size the main map's column from the *data*'s east:north aspect
@@ -1293,7 +1386,19 @@ class LiveVisualizer:
                 self.colregs_ax.set_anchor("W")
                 stack_cell = gs_outer[0, 2]
             else:
-                stack_cell = gs_outer[0, 1]
+                stack_cell = gs_outer[0, 1] if has_stack else None
+            self._cost_ax = None
+            self._cost_legend_ax: Optional[plt.Axes] = None
+            if show_cost:
+                # Title and legend in a strip on top, so they never cover the
+                # cheapest plans; the left part of the column holds the plan
+                # names (y labels).
+                gs_cost = gridspec.GridSpecFromSubplotSpec(
+                    2, 2, subplot_spec=gs_outer[0, ncols - 1], width_ratios=[0.38, 1.0],
+                    height_ratios=[0.13, 1.0], wspace=0.0, hspace=0.02)
+                self._cost_legend_ax = self.fig.add_subplot(gs_cost[0, :])
+                self._cost_legend_ax.set_axis_off()
+                self._cost_ax = self.fig.add_subplot(gs_cost[1, 1])
 
             stack_items: list = []
             stack_ratios: list[float] = []
@@ -1842,6 +1947,18 @@ class LiveVisualizer:
                        if self._panel_titles and not self._cg_inset else None),
             )
 
+        if self._cost_ax is not None:
+            costs = self._cost_fn(k)
+            if costs is not self._cost_shown:      # redraw only on a new replan
+                self._cost_shown = costs
+                if costs is None:
+                    self._cost_ax.clear()
+                    self._cost_ax.set_axis_off()
+                else:
+                    self._cost_ax.set_axis_on()
+                    _draw_cost_panel(self._cost_ax, self._cost_legend_ax, costs,
+                                     title=self._panel_titles)
+
         if self._responding_ax is not None and self._responding_history:
             _draw_responding_panel(
                 self._responding_ax,
@@ -2010,6 +2127,7 @@ def run_live(
     pred_every:         int                                   = 1,
     pred_top_k:         int                                   = 1,
     plan_fn:            Optional[Callable[[int], dict[str, PlanOverlay]]] = None,
+    cost_fn:            Optional[Callable[[int], Optional[PlanCosts]]] = None,
     colregs_graphs:     Optional[list[ColregsGraph]]         = None,
     responding_history: Optional[dict[str, list[float]]]     = None,
     stop_time:          Optional[float]                      = None,
@@ -2028,7 +2146,7 @@ def run_live(
     viz = LiveVisualizer(sim_info, vc, debug_vessel_ids=debug_vessel_ids,
                          pred_fn=pred_fn, nominal_pred_fn=nominal_pred_fn,
                          pred_every=pred_every, pred_top_k=pred_top_k,
-                         plan_fn=plan_fn,
+                         plan_fn=plan_fn, cost_fn=cost_fn,
                          show_colregs_graph=show_cg,
                          responding_history=responding_history,
                          goals=goals)

@@ -71,7 +71,7 @@ from colregs_planner.policies.cto import CTOPolicy
 from colregs_planner.policies.predictor_dp import PredictorDPPolicy
 from colregs_planner.policies.search_dp import SearchDPPolicy
 from colregs_planner.planner_api.manoeuvre_search import (
-    ManoeuvreSearchPlanner, SearchConfig, interpolate_track,
+    COST_CATEGORIES, ManoeuvreSearchPlanner, SearchConfig, cost_by_category, interpolate_track,
 )
 from colregs_planner.colregs_graph.colregs_graph import apply_responsiveness
 from colregs_planner.colregs_graph.colregs_classifier import ColregsClassifier
@@ -81,7 +81,7 @@ from colregs_planner.prediction.vo_rollout import (
     vo_rollout, VOAgentConfig, enumerate_and_rollout, make_vo_policy, nominal_1step,
 )
 from colregs_planner.visualization.live_viz import (
-    PlanOverlay, VesselMeta, SimInfo, VizConfig, run_live, save_responding_plot, VESSEL_COLORS,
+    PlanCosts, PlanOverlay, VesselMeta, SimInfo, VizConfig, run_live, save_responding_plot, VESSEL_COLORS,
 )
 from colregs_planner.scenario_config import PredictionConfig, build_vo_agent_config, load_config
 
@@ -266,6 +266,37 @@ def _plan_overlay_fn(
         return out
 
     return _overlays
+
+
+def _plan_costs_fn(
+    plan_log: dict[str, SearchDPPolicy], dt: float, display_names: dict[str, str],
+) -> Callable[[int], Optional[PlanCosts]]:
+    """frame -> every plan of the latest replan of ego (else the first
+    search_dp vessel), with its cost per COST_CATEGORIES group. One
+    PlanCosts object per replan, so the panel redraws only when it changes."""
+    vid = "ego" if "ego" in plan_log else next(iter(plan_log))
+    pol = plan_log[vid]
+    weights = pol.planner.cfg.weights
+    legend = {cat: [(name.removeprefix("w_"), getattr(weights, name)) for name in names]
+              for cat, (_, names) in COST_CATEGORIES.items()}
+    cache: dict[int, PlanCosts] = {}
+
+    def _costs(frame: int) -> Optional[PlanCosts]:
+        t = frame * dt
+        rec = next((p for p in reversed(pol.plans) if p.t <= t + 1e-9), None)
+        if rec is None:
+            return None
+        if id(rec) not in cache:
+            cache[id(rec)] = PlanCosts(
+                vessel_label = display_names.get(vid, vid),
+                t            = rec.t,
+                plans        = [(" → ".join(a.name for a in p.actions), cost_by_category(p.terms))
+                                for p in rec.result.ranked],
+                weights      = legend,
+            )
+        return cache[id(rec)]
+
+    return _costs
 
 
 # ---------------------------------------------------------------------------
@@ -1006,6 +1037,7 @@ def main() -> None:
              pred_fn=pred_fn, nominal_pred_fn=nominal_pred_fn, pred_every=pred_every,
              pred_top_k=pred_cfg.top_k_hypotheses,
              plan_fn=_plan_overlay_fn(plan_log, config.dt) if plan_log else None,
+             cost_fn=_plan_costs_fn(plan_log, config.dt, display_names) if plan_log else None,
              colregs_graphs=colregs_graphs,
              responding_history=responding_history or None,
              stop_time=args.stop_time,
