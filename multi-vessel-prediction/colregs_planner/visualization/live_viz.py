@@ -355,6 +355,43 @@ class VizConfig:
 # Ship polygon geometry
 # ---------------------------------------------------------------------------
 
+def _merge_plan_marks(
+    marks: list[tuple[float, float, str]], ax, min_sep_pt: float,
+) -> list[tuple[float, float, str]]:
+    """Merge consecutive plan marks closer than *min_sep_pt* on screen into
+    one mark at the first, so a stop or slow (whose track barely moves)
+    doesn't stack its labels. The merged label reads as a sequence, with
+    repeats of an action counted: "stop ×2 (t=40 s) → nominal". An action's
+    name is the label's first word; anything after it is kept once."""
+    if not marks:
+        return []
+    px = ax.transData.transform([(e, n) for n, e, _ in marks])
+    min_sep_px = min_sep_pt * ax.figure.dpi / 72.0
+    groups: list[list[int]] = [[0]]
+    for i in range(1, len(marks)):
+        if np.hypot(*(px[i] - px[groups[-1][0]])) < min_sep_px:
+            groups[-1].append(i)
+        else:
+            groups.append([i])
+
+    merged = []
+    for g in groups:
+        runs: list[list[str]] = []           # [name, suffix, count]
+        for i in g:
+            name, _, suffix = marks[i][2].partition(" ")
+            if runs and runs[-1][0] == name:
+                runs[-1][2] += 1
+            else:
+                runs.append([name, suffix, 1])
+        label = " → ".join(
+            name + (f" ×{count}" if count > 1 else "") + (f" {suffix}" if suffix else "")
+            for name, suffix, count in runs
+        )
+        n, e, _ = marks[g[0]]
+        merged.append((n, e, label))
+    return merged
+
+
 def _ship_polygon_body(length: float, width: float, bow_fraction: float) -> np.ndarray:
     L  = length
     W  = width
@@ -1763,10 +1800,18 @@ class LiveVisualizer:
                     continue
                 line.set_data(plan.east, plan.north)
                 marks.set_data([m[1] for m in plan.marks], [m[0] for m in plan.marks])
-                for n, e, label in plan.marks:
+                label_size = FONT_SIZE * 0.7
+                # Labels go to port of the planned track: the vessel's own
+                # label sits to starboard (VesselArtist).
+                d_e, d_n = plan.east[-1] - plan.east[0], plan.north[-1] - plan.north[0]
+                norm = np.hypot(d_e, d_n)
+                port_e, port_n = (-d_n / norm, d_e / norm) if norm > 1e-6 else (-1.0, 0.0)
+                for n, e, label in _merge_plan_marks(plan.marks, self.ax, 2.0 * label_size):
                     self._plan_texts.append(self.ax.annotate(
-                        label, (e, n), xytext=(6, -10), textcoords="offset points",
-                        fontsize=FONT_SIZE * 0.7, color=line.get_color(), zorder=6,
+                        label, (e, n), xytext=(8 * port_e, 8 * port_n), textcoords="offset points",
+                        ha="right" if port_e < -0.3 else "left" if port_e > 0.3 else "center",
+                        va="top" if port_n < -0.3 else "bottom" if port_n > 0.3 else "center",
+                        fontsize=label_size, color=line.get_color(), zorder=6,
                         bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.7),
                     ))
 
