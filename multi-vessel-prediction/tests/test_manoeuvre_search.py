@@ -530,6 +530,23 @@ def test_search_dp_overtakes_inside_the_tcpa_threshold_and_passes_clear():
     assert not any(a.course_offset < 0 for r in plans if r.t < level for a in r.result.best.actions)
 
 
+def test_overtaken_vessel_ahead_is_not_past_while_turning_away():
+    """Mid-alteration, heading well to starboard, the range to the vessel
+    being overtaken opens on the actual velocity (TCPA < 0), but it is still
+    ahead: turning back toward it keeps costing, and holding on the offset
+    track counts its CPA beyond the horizon."""
+    from colregs_planner.colregs_graph.colregs_classifier import _compute_dcpa_tcpa
+    planner, states, graph, _ = _planner(OVERTAKING_AHEAD)
+    d_pass = planner.configs["ego"].d_pass
+    states = _closer(states, planner, 0.7 * planner.configs["ego"].tcpa_threshold)
+    states["ego"] = replace(states["ego"], east=0.5 * d_pass, psi=math.radians(60.0))
+    assert _compute_dcpa_tcpa(states["ego"], states["target_1"])[1] < 0.0
+    result = planner.plan(states, graph, t=0.0, responding_probs={"target_1": 0.99})
+    toward = [p for p in result.ranked if any(a.course_offset < 0 for a in p.actions)]
+    assert all(p.terms["colregs"] >= planner.cfg.weights.w_port for p in toward)
+    assert all(a.course_offset >= 0.0 for a in result.best.actions)
+
+
 def test_overtaking_does_not_turn_back_toward_the_target_near_d_pass():
     """Just inside d_pass on the starboard side, a port turn would also count
     as "altering course" and cost less deviation. It must not be chosen:

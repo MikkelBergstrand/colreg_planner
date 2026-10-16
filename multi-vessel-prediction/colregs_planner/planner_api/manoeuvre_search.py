@@ -92,7 +92,10 @@ filter actually doubts the other vessel (Rule 17).
 
 Roles only count toward vessels still approaching (TCPA > 0): the classifier
 keeps an encounter's roles until the vessels have opened to d_u, and once
-they are past each other the rules no longer bind the return to track.
+they are past each other the rules no longer bind the return to track. For
+a vessel being overtaken, the TCPA is taken on the route course, so it is
+past once drawn level: turning away opens the range on the actual velocity
+long before that.
     cost = sum_h w_h (safety_h + colregs_h) + risk_weight * max_{h: w_h >= risk_floor} safety_h
          + w_dev * mean_t (cross-track offset(t) / d_pass)^2
          + w_effort * sum_edges (|offset| / 60 deg + [slowed or stopped]) * edge_s / effort_ref_s
@@ -403,10 +406,15 @@ class ManoeuvreSearchPlanner:
         overtake_side: dict[str, int] = {}
         for j, r in nom_graph.get_roles(own_idx):
             vid = idx_to_vid.get(j)
-            if r != VesselRole.OVERTAKING or vid not in approaching:
+            if r != VesselRole.OVERTAKING or vid not in others:
                 continue
+            # Past once drawn level, judged on the route course: while the
+            # own ship is altering course away, the TCPA on its actual
+            # velocity can turn negative long before it has passed.
             dcpa, tcpa = _compute_dcpa_tcpa(on_route, states[vid])
-            if 0.0 < tcpa < own_cfg.tcpa_threshold:
+            if tcpa <= 0.0:
+                continue
+            if tcpa < own_cfg.tcpa_threshold:
                 overtaken.add(vid)
                 overtake_conflict |= dcpa < d_overtake
                 tgt = states[vid]
