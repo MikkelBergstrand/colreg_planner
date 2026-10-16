@@ -55,6 +55,7 @@ viz:
   trail_length: 0
   realtime_factor: 100.0
   responding_panel: true
+  padding: 30.0
   vessel:
     length: 12.0
     width: 3.6

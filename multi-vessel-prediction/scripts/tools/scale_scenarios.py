@@ -14,11 +14,11 @@ others must avoid and keeps its plain policy. Targets keep their kinematic
 models and VO policies.
 
 Scaled, besides the keys set in each file (speed, range, d_pass,
-lateral_offset_m, viz.padding):
+lateral_offset_m):
   * los_lookahead (VOAgentConfig default, set per vessel)
   * the overtaking start offset (encounter._OVERTAKING_LATERAL)
   * the COLREGs classifier distances d_u, dcpa_max, d_a (scenario.classifier)
-  * the drawn hull size (viz.vessel.length/width)
+  * the view margin (viz.padding) and the drawn hull size (viz.vessel.length/width)
 
 Usage
 -----
@@ -70,9 +70,8 @@ def scale_config(raw: dict, k: float) -> dict:
     sc["classifier"] = {"d_u": s(clf.d_u), "dcpa_max": s(clf.dcpa_max), "d_a": s(clf.d_a)}
 
     viz = out.setdefault("viz", {})
-    if "padding" in viz:
-        viz["padding"] = s(viz["padding"])
     viz_defaults = VizConfig()
+    viz["padding"] = s(viz.get("padding", viz_defaults.padding))
     viz["vessel"] = {
         "length": s(viz_defaults.vessel_length),
         "width":  s(viz_defaults.vessel_width),
