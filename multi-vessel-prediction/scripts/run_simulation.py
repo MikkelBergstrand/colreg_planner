@@ -71,7 +71,8 @@ from colregs_planner.policies.cto import CTOPolicy
 from colregs_planner.policies.predictor_dp import PredictorDPPolicy
 from colregs_planner.policies.search_dp import SearchDPPolicy
 from colregs_planner.planner_api.manoeuvre_search import (
-    COST_CATEGORIES, ManoeuvreSearchPlanner, SearchConfig, cost_by_category, interpolate_track,
+    COST_CATEGORIES, ManoeuvreSearchPlanner, SearchConfig, SearchWeights, cost_by_category,
+    interpolate_track,
 )
 from colregs_planner.colregs_graph.colregs_graph import apply_responsiveness
 from colregs_planner.colregs_graph.colregs_classifier import ColregsClassifier
@@ -128,13 +129,24 @@ def _search_pool(n_workers: int) -> Optional[RolloutPool]:
 
 
 def _search_config(vcfg: dict) -> SearchConfig:
-    """SearchConfig from a vessel's optional `search:` block (scalar fields only)."""
+    """SearchConfig from a vessel's optional `search:` block: its scalar
+    fields, plus a `weights:` sub-block of SearchWeights overrides, e.g.
+
+        search:
+          edge_s: 7.5
+          weights: {hold_rel_margin: 0.3, w_dev: 4.0}
+    """
     raw = dict(vcfg.get("search") or {})
+    weights = dict(raw.pop("weights", None) or {})
     valid = {"depth", "edge_s", "plan_dt", "horizon_s", "top_k"}
     unknown = set(raw) - valid
     if unknown:
-        raise ValueError(f"Unknown search key(s) {sorted(unknown)}. Valid: {sorted(valid)}")
-    return SearchConfig(**raw)
+        raise ValueError(f"Unknown search key(s) {sorted(unknown)}. Valid: {sorted(valid | {'weights'})}")
+    valid_w = set(vars(SearchWeights()))
+    unknown = set(weights) - valid_w
+    if unknown:
+        raise ValueError(f"Unknown search.weights key(s) {sorted(unknown)}. Valid: {sorted(valid_w)}")
+    return SearchConfig(**raw, weights=SearchWeights(**weights))
 
 
 def _build_policy(
@@ -287,11 +299,15 @@ def _plan_costs_fn(
         if rec is None:
             return None
         if id(rec) not in cache:
+            plans = rec.result.ranked
             cache[id(rec)] = PlanCosts(
                 vessel_label = display_names.get(vid, vid),
                 t            = rec.t,
-                plans        = [(" → ".join(a.name for a in p.actions), cost_by_category(p.terms))
-                                for p in rec.result.ranked],
+                # The plan in force, continued (hysteresis), is marked.
+                plans        = [(" → ".join(a.name for a in p.actions)
+                                 + (" (kept)" if p is rec.result.kept else ""),
+                                 cost_by_category(p.terms)) for p in plans],
+                chosen       = next(i for i, p in enumerate(plans) if p is rec.result.best),
                 weights      = legend,
             )
         return cache[id(rec)]
@@ -930,6 +946,7 @@ def main() -> None:
         for rec in pol.plans:
             b = rec.result.best
             print(f"  t={rec.t:5.1f} s  {' -> '.join(a.name for a in b.actions):20s}"
+                  f"  {'kept ' if b is rec.result.kept else 'fresh'}"
                   f"  cost {b.cost:7.2f}  min dist "
                   + ", ".join(f"{o} {d:.1f} m" for o, d in b.min_dist.items()))
 

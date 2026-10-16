@@ -153,12 +153,40 @@ def test_hypotheses_pin_own_intent_and_renormalise():
     assert [p for _, p in result.hypotheses] == pytest.approx([0.7, 0.3])
 
 
-def test_commitment_lasts_one_edge():
+def test_plan_in_force_continues_edge_by_edge():
     planner, *_ = _planner(edge_s=15.0)
-    a, b = DEFAULT_ACTIONS[1], DEFAULT_ACTIONS[2]
-    planner._active = (a, 10.0)
-    assert planner._committed_action(20.0) is a
-    assert planner._committed_action(25.0) is None      # edge done: free to switch
+    nominal, a, b = DEFAULT_ACTIONS[0], DEFAULT_ACTIONS[1], DEFAULT_ACTIONS[2]
+    assert planner._continuation(0.0) is None
+    planner._kept = ((a, b), 10.0)
+    assert planner._continuation(20.0) == (a, b)               # first edge under way
+    assert planner._continuation(25.0) == (b, nominal)
+    assert planner._continuation(60.0) == (nominal, nominal)
+
+
+def _scored(cost, cpa=0.0):
+    from colregs_planner.planner_api.manoeuvre_search import ScoredPlan
+    return ScoredPlan(actions=(), cost=cost, min_dist={}, terms={"safety": cpa, "risk": 0.0})
+
+
+def test_keep_unless_clearly_cheaper_or_less_safe():
+    planner, *_ = _planner()
+    w = planner.cfg.weights
+    kept = _scored(10.0)
+    margin = max(w.hold_abs_margin, w.hold_rel_margin * kept.cost)
+    assert planner._keep(kept, _scored(10.0 - 0.9 * margin))
+    assert not planner._keep(kept, _scored(10.0 - 1.1 * margin))
+    # Safety is the limit: a less safe kept plan goes, whatever the margin.
+    assert not planner._keep(_scored(10.0, cpa=1.0), _scored(9.99, cpa=0.5))
+
+
+def test_replan_continues_the_plan_in_force():
+    planner, states, graph, _ = _planner(horizon_s=40.0)
+    first = planner.plan(states, graph, t=0.0)
+    assert first.kept is None
+    second = planner.plan(states, graph, t=5.0)          # still on the first edge
+    assert second.kept is not None and second.kept.actions == first.best.actions
+    assert second.kept in second.ranked
+    assert second.best is second.kept or planner._keep(second.kept, second.ranked[0]) is False
 
 
 def test_interpolate_track():
@@ -229,6 +257,16 @@ def test_search_dp_requires_milliampere():
 def test_unknown_search_key_rejected():
     with pytest.raises(ValueError, match="dpeth"):
         _simulate(HEAD_ON, "search_dp", search={"dpeth": 3})
+
+
+def test_search_weights_from_yaml():
+    sys.path.insert(0, str(REPO / "scripts"))
+    import run_simulation as rs
+    cfg = rs._search_config({"search": {"edge_s": 10.0, "weights": {"hold_rel_margin": 0.3}}})
+    assert cfg.edge_s == 10.0 and cfg.weights.hold_rel_margin == 0.3
+    assert cfg.weights.w_dev == SearchWeights().w_dev
+    with pytest.raises(ValueError, match="hold_margin"):
+        rs._search_config({"search": {"weights": {"hold_margin": 0.3}}})
 
 
 def test_drawn_prediction_follows_committed_plan():
@@ -384,7 +422,7 @@ def test_risk_floor_excludes_unlikely_hypothesis_from_worst_case():
     assert s_distrusted > 100 * max(s_trusted, 1e-3)      # holding is a collision if distrusted
 
     planner.cfg.weights.risk_floor = 0.0                  # old behaviour: max over both
-    planner._active = None
+    planner.reset()
     hold_all = {p.actions: p for p in planner.plan(
         states, graph, t=0.0, responding_probs={"target_1": 0.99}).ranked}[(nominal, nominal)]
     assert hold_all.terms["risk"] == pytest.approx(s_distrusted, rel=1e-6)
@@ -546,7 +584,7 @@ def test_give_way_cost_lapses_once_the_route_course_passes_clear():
     nominal = next(a for a in DEFAULT_ACTIONS if a.is_nominal)
 
     def hold_colregs(st):
-        planner._active = None
+        planner.reset()
         r = planner.plan(st, graph, t=0.0)
         return next(p for p in r.ranked if p.actions == (nominal, nominal)).terms["colregs"]
 
@@ -570,7 +608,7 @@ def test_head_on_cost_lapses_once_the_route_course_passes_clear():
     nominal = next(a for a in DEFAULT_ACTIONS if a.is_nominal)
 
     def hold_colregs(st):
-        planner._active = None
+        planner.reset()
         r = planner.plan(st, graph, t=0.0)
         return next(p for p in r.ranked if p.actions == (nominal, nominal)).terms["colregs"]
 

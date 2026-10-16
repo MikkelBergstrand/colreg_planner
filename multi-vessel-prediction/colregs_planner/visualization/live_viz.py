@@ -195,14 +195,18 @@ class PlanOverlay:
 class PlanCosts:
     """Every plan one replan considered, with its cost per category.
 
-    plans   : (label, {category: cost}), cheapest first; the first was chosen
+    plans   : (label, {category: cost}), cheapest first
     weights : category -> [(weight name, value)] for the legend
+    chosen  : index into plans of the plan followed. Not always the
+              cheapest: the planner keeps its previous plan unless a fresh
+              one is clearly cheaper (hysteresis).
     """
 
     vessel_label: str
     t:            float
     plans:        list[tuple[str, dict[str, float]]]
     weights:      dict[str, list[tuple[str, float]]]
+    chosen:       int = 0
 
 
 @dataclass
@@ -787,7 +791,7 @@ def _draw_cost_panel(ax: plt.Axes, legend_ax: plt.Axes, costs: PlanCosts,
     ax.set_facecolor(PANEL_BG)
     cats = list(costs.weights)
     totals = np.array([sum(c.values()) for _, c in costs.plans])
-    x_max = max(float(np.median(totals)), 1.5 * totals[0], 1.0)
+    x_max = max(float(np.median(totals)), 1.5 * totals[costs.chosen], 1.5 * totals[0], 1.0)
     n = len(costs.plans)
     y = np.arange(n)
     small = FONT_SIZE * 0.6
@@ -810,8 +814,8 @@ def _draw_cost_panel(ax: plt.Axes, legend_ax: plt.Axes, costs: PlanCosts,
     ax.set_ylim(n - 0.5, -0.5)
     ax.set_yticks(y)
     ax.set_yticklabels([lbl for lbl, _ in costs.plans], fontsize=small)
-    ax.get_yticklabels()[0].set_fontweight("bold")
-    ax.axhspan(-0.5, 0.5, color="#2a2a28", alpha=0.07, zorder=1, lw=0)
+    ax.get_yticklabels()[costs.chosen].set_fontweight("bold")
+    ax.axhspan(costs.chosen - 0.5, costs.chosen + 0.5, color="#2a2a28", alpha=0.07, zorder=1, lw=0)
     ax.tick_params(axis="x", labelsize=small)
     ax.tick_params(axis="y", length=0)
     ax.set_xlabel("Cost", fontsize=small)

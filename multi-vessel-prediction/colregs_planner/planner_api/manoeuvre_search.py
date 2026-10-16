@@ -97,13 +97,25 @@ they are past each other the rules no longer bind the return to track.
          + w_dev * mean_t (cross-track offset(t) / d_pass)^2
          + w_effort * sum_edges (|offset| / 60 deg + [slowed or stopped]) * edge_s / effort_ref_s
          + w_time * (time lost along the route over the horizon) / time_ref_s
-         + w_switch * [first edge differs from the action under way, which
-                       started less than edge_s ago]
 
 where d_j is the closest approach to vessel j over the horizon. The
 cross-track term is averaged over the horizon rather than taken at its end:
 an end-only term ties "return now" with "return on the next edge", and
 replanning then postpones the return indefinitely.
+
+Hysteresis: the plan in force is continued edge by edge. Adopted at t0,
+at time t its continuation is its actions from edge k = floor((t - t0) /
+edge_s) on, padded with nominal, each edge at full length: (stop, stbd_60)
+adopted at 0 continues as itself until 7.5 s, then (stbd_60, nominal),
+then (nominal, nominal). That is one of the grid plans, so it is scored
+anyway, and it is followed unless the cheapest plan is cheaper by more
+than max(hold_abs_margin, hold_rel_margin * its cost). The limit is
+safety: the continuation is dropped as soon as its CPA cost (safety +
+risk) exceeds the cheapest plan's by more than hold_safety_tol, whatever
+the margin. The margin is what still lets the ship return to its route.
+Edges are re-anchored at full length rather than shortened by the time
+already sailed: a plan relies on replanning to extend it, so its literal
+remainder resumes nominal too early and is always less safe.
 """
 
 from __future__ import annotations
@@ -158,12 +170,16 @@ class SearchWeights:
     w_stand_on:  float = 10.0
     w_dev:       float = 2.0
     w_effort:    float = 1.0
-    w_switch:    float = 2.0
     w_time:      float = 1.0
     time_ref_s:  float = 15.0   # time lost is charged per this many seconds, whatever edge_s is
     effort_ref_s: float = 15.0  # an edge's effort counts in full when held this long, whatever edge_s is
     risk_weight: float = 1.0
     risk_floor:  float = 0.1    # hypotheses below this weight stay out of the worst case
+    # Hysteresis (see the module docstring): keep the previous plan unless a
+    # fresh one is this much cheaper, or the previous one is less safe.
+    hold_abs_margin: float = 0.1
+    hold_rel_margin: float = 0.15
+    hold_safety_tol: float = 0.0
 
 
 # Cost terms (ScoredPlan.terms) grouped for display, each group with the
@@ -172,7 +188,7 @@ COST_CATEGORIES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "CPA":     (("safety", "risk"),     ("w_safe", "w_coll", "bow_factor", "risk_weight")),
     "COLREGs": (("colregs",),           ("w_port", "w_give_way", "w_stand_on")),
     "Route":   (("deviation", "time"),  ("w_dev", "w_time")),
-    "Effort":  (("effort", "switch"),   ("w_effort", "w_switch")),
+    "Effort":  (("effort",),            ("w_effort",)),
 }
 
 
@@ -208,6 +224,7 @@ class SearchResult:
     own_traj:      list[VesselState]      # own ship along the best plan, plan_dt apart
     rollouts:      list[dict[str, list[VesselState]]]   # best plan, one per hypothesis
     plan_dt:       float
+    kept:          Optional[ScoredPlan] = None   # continuation of the plan in force (in ranked)
 
 
 class ManoeuvreSearchPlanner:
@@ -240,9 +257,13 @@ class ManoeuvreSearchPlanner:
         self.index_map = vessel_index_map
         self.cfg       = config or SearchConfig()
         self.pool      = pool
-        # Action under way and when it started: a replan may keep it going,
-        # but only its first edge_s is a commitment.
-        self._active: Optional[tuple[SearchAction, float]] = None
+        # The plan in force and when it was adopted: continued at the next
+        # replan unless another plan clearly beats it (hysteresis).
+        self._kept: Optional[tuple[tuple[SearchAction, ...], float]] = None
+
+    def reset(self) -> None:
+        """Forget the plan in force: the next plan() chooses freely."""
+        self._kept = None
 
     # ------------------------------------------------------------------
     # Plans as velocity sequences
@@ -264,6 +285,19 @@ class ManoeuvreSearchPlanner:
             R = np.array([[math.cos(rot), -math.sin(rot)], [math.sin(rot), math.cos(rot)]])
             seq[i * per_edge:(i + 1) * per_edge] = (R @ nominal) * a.speed_factor
         return seq
+
+    def _continuation(self, t: float) -> Optional[tuple[SearchAction, ...]]:
+        """The plan in force continued at t: its edges from the one under way
+        on, padded with nominal, each at full length. None before the first
+        plan, or without a nominal action to pad with."""
+        if self._kept is None:
+            return None
+        actions, t0 = self._kept
+        nominal = next((a for a in self.cfg.actions if a.is_nominal), None)
+        if nominal is None:
+            return None
+        k = min(len(actions), int(math.floor((t - t0) / self.cfg.edge_s + 1e-9)))
+        return actions[k:] + (nominal,) * k
 
     def _sequences(self) -> list[tuple[SearchAction, ...]]:
         return list(itertools.product(self.cfg.actions, repeat=self.cfg.depth))
@@ -293,13 +327,6 @@ class ManoeuvreSearchPlanner:
             return 0.0
         required = f * d_pass
         return max(0.0, (required - float(ahead.min())) / required)
-
-    def _committed_action(self, t: float) -> Optional[SearchAction]:
-        """The action under way if it started less than edge_s before t."""
-        if self._active is None:
-            return None
-        action, started = self._active
-        return action if t - started < self.cfg.edge_s - 1e-9 else None
 
     # ------------------------------------------------------------------
     # Search
@@ -346,7 +373,6 @@ class ManoeuvreSearchPlanner:
             int_intents = {self.index_map[vid]: assignment[vid] for vid in ids}
             graphs.append((int_intents, apply_responsiveness(nom_graph, int_intents)))
 
-        committed = self._committed_action(t)
         others = [vid for vid in ids if vid != self.own_id]
         approaching = {
             vid for vid in others
@@ -486,7 +512,6 @@ class ManoeuvreSearchPlanner:
             progress = ((end.north - states[self.own_id].north) * math.cos(psi0)
                         + (end.east - states[self.own_id].east) * math.sin(psi0))
             time_lost = max(0.0, H * c.plan_dt - progress / own_cfg.ref_speed)
-            switch = committed is not None and actions[0] != committed
 
             terms = {
                 "safety":   sum(p * s for (_, p), s in zip(hyps, safety)),
@@ -497,7 +522,6 @@ class ManoeuvreSearchPlanner:
                 "deviation": w.w_dev * float(np.mean((xtrack / d_pass) ** 2)),
                 "effort":   w.w_effort * effort,
                 "time":     w.w_time * time_lost / w.time_ref_s,
-                "switch":   w.w_switch * switch,
             }
             plan = ScoredPlan(actions=actions, cost=sum(terms.values()),
                               min_dist=worst_d, terms=terms)
@@ -505,8 +529,12 @@ class ManoeuvreSearchPlanner:
 
         scored.sort(key=lambda x: x[0].cost)
         best, best_rollouts = scored[0]
-        if self._active is None or best.actions[0] != self._active[0]:
-            self._active = (best.actions[0], t)
+        cont = self._continuation(t)
+        kept = next((x for x in scored if x[0].actions == cont), None)
+        if kept is not None and self._keep(kept[0], best):
+            best, best_rollouts = kept
+        if best.actions != cont:          # a new plan: its edges count from now
+            self._kept = (best.actions, t)
         return SearchResult(
             best       = best,
             ranked     = [p for p, _ in scored],
@@ -514,7 +542,19 @@ class ManoeuvreSearchPlanner:
             own_traj   = best_rollouts[0][self.own_id],
             rollouts   = best_rollouts,
             plan_dt    = c.plan_dt,
+            kept       = kept[0] if kept is not None else None,
         )
+
+    def _keep(self, kept: ScoredPlan, fresh: ScoredPlan) -> bool:
+        """Keep the plan in force over the cheapest fresh plan: unless it is
+        less safe (CPA cost higher by more than hold_safety_tol), only a
+        saving above the margin justifies switching."""
+        w = self.cfg.weights
+        def cpa(p: ScoredPlan) -> float:
+            return p.terms["safety"] + p.terms["risk"]
+        if cpa(kept) > cpa(fresh) + w.hold_safety_tol + 1e-9:
+            return False
+        return kept.cost - fresh.cost <= max(w.hold_abs_margin, w.hold_rel_margin * kept.cost)
 
 
 def interpolate_track(traj: list[VesselState], dt: float, t: float) -> tuple[float, float, float]:

@@ -99,7 +99,7 @@ def test_search_planner_pool_matches_serial():
     probs = {"target_1": 0.7}
 
     def ranked():
-        planner._active = None          # no action under way, so no switch cost
+        planner.reset()                 # no plan in force, so nothing kept
         return planner.plan(states, graph, t=0.0, responding_probs=probs, classifier=clf)
 
     serial = ranked()
