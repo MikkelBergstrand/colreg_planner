@@ -74,6 +74,11 @@ w_stand_on), and the search postpones the give-way manoeuvre to "the next
 edge" at every replan. The safety and port terms still keep the manoeuvre
 clear of the stand-on vessel.
 
+With pass_margin > 0, d_pass in safety_h (short_j, bow_j and the
+overtaking extension) is d_pass + pass_margin: a buffer for prediction
+error, since a plan that only just clears d_pass costs nothing. The role
+conflicts and the deviation scale keep d_pass.
+
 d_j is the closest approach to vessel j over the rollout. Crossing ahead of a
 vessel needs more room than passing astern of it (Rule 15: the give-way
 vessel avoids crossing ahead). bcr_j, the bow crossing range, is how far
@@ -106,6 +111,13 @@ cross-track term is averaged over the horizon rather than taken at its end:
 an end-only term ties "return now" with "return on the next edge", and
 replanning then postpones the return indefinitely.
 
+Hull response: the own ship's track along a plan is also the reference
+its DP controller follows (policies/search_dp.py), and the hull lags it: a
+stop takes about 8 m past where the reference stops. With a HullModel set,
+the plan is scored, and the other vessels react to it, along the hull's
+predicted track instead of the reference. The reference itself is
+unchanged, so DP still brakes as hard as it can.
+
 Hysteresis: the plan in force is continued edge by edge. Adopted at t0,
 at time t its continuation is its actions from edge k = floor((t - t0) /
 edge_s) on, padded with nominal, each edge at full length: (stop, stbd_60)
@@ -134,7 +146,7 @@ import numpy as np
 from colregs_planner.colregs_graph.colregs_classifier import ColregsClassifier, _compute_dcpa_tcpa
 from colregs_planner.colregs_graph.colregs_graph import ColregsGraph, VesselRole, apply_responsiveness
 from colregs_planner.prediction.parallel import RolloutPool, submit_rollout
-from colregs_planner.prediction.vo_rollout import VOAgentConfig, rank_hypotheses
+from colregs_planner.prediction.vo_rollout import VOAgentConfig, rank_hypotheses, vo_rollout
 from colregs_planner.vessel.state import Intent, VesselState, wrap_angle
 
 
@@ -178,6 +190,7 @@ class SearchWeights:
     effort_ref_s: float = 15.0  # an edge's effort counts in full when held this long, whatever edge_s is
     risk_weight: float = 1.0
     risk_floor:  float = 0.1    # hypotheses below this weight stay out of the worst case
+    pass_margin: float = 0.0    # [m] the safety cost aims for d_pass + pass_margin (see docstring)
     # Hysteresis (see the module docstring): keep the previous plan unless a
     # fresh one is this much cheaper, or the previous one is less safe.
     hold_abs_margin: float = 0.1
@@ -201,6 +214,57 @@ def cost_by_category(terms: dict[str, float]) -> dict[str, float]:
 
 
 @dataclass
+class HullModel:
+    """Closed-loop response of the hull to a DP reference moving along a plan:
+
+        a = kp (p_r - p) + kd (v_r - v) - c v,   |a| <= a_max
+
+    integrated at h, with the reference moving linearly between its samples.
+    Every reanchor_s the reference is moved onto the hull, as SearchDPPolicy
+    does at each replan: the hull then does not back up onto a stop point it
+    overshot, but creeps on from where it is. The defaults are fitted to the
+    milliAmpere simulator's DP following the planner's own-ship tracks from
+    0-1.5 m/s, re-anchored every 5 s (scripts/tools/fit_hull_model.py; RMS
+    error 1.4 m over 40 s, worst 3.5 m, against 4.5 m and 10 m taking the
+    reference as the hull). With that
+    re-anchoring the position feedback fits to zero: the hull follows the
+    reference velocity at rate kd, at most a_max."""
+
+    kp:    float = 0.0
+    kd:    float = 0.2016
+    c:     float = 0.0
+    a_max: float = 0.1706
+    h:     float = 0.1
+    reanchor_s: Optional[float] = None   # the own ship's replan interval
+
+    def track(self, refs: np.ndarray, v0: np.ndarray, dt: float) -> tuple[np.ndarray, np.ndarray]:
+        """Hull positions and velocities (P, n+1, 2) along the reference
+        positions *refs* (P, n+1, 2) at spacing dt, starting on the reference
+        with velocity v0 [vn, ve]."""
+        n_sub = max(1, int(round(dt / self.h)))
+        h = dt / n_sub
+        every = int(round(self.reanchor_s / dt)) if self.reanchor_s else 0
+        refs = np.array(refs, dtype=float)
+        vr = np.diff(refs, axis=1) / dt
+        p = refs[:, 0].copy()
+        v = np.tile(np.asarray(v0, dtype=float), (len(refs), 1))
+        pos, vel = [p.copy()], [v.copy()]
+        for k in range(refs.shape[1] - 1):
+            if every and k and k % every == 0:
+                refs[:, k:] += (p - refs[:, k])[:, None]
+            for j in range(n_sub):
+                a = (self.kp * (refs[:, k] + vr[:, k] * (j * h) - p)
+                     + self.kd * (vr[:, k] - v) - self.c * v)
+                na = np.linalg.norm(a, axis=1, keepdims=True)
+                a *= np.minimum(1.0, self.a_max / np.maximum(na, 1e-12))
+                v = v + a * h
+                p = p + v * h
+            pos.append(p.copy())
+            vel.append(v.copy())
+        return np.stack(pos, axis=1), np.stack(vel, axis=1)
+
+
+@dataclass
 class SearchConfig:
     depth:     int   = 2
     edge_s:    float = 7.5      # duration of each edge [s]
@@ -209,6 +273,7 @@ class SearchConfig:
     top_k:     int   = 2        # responsiveness hypotheses scored
     actions:   tuple[SearchAction, ...] = DEFAULT_ACTIONS
     weights:   SearchWeights = field(default_factory=SearchWeights)
+    hull:      Optional[HullModel] = None   # score along the hull's track (see docstring)
 
 
 @dataclass
@@ -224,10 +289,11 @@ class SearchResult:
     best:          ScoredPlan
     ranked:        list[ScoredPlan]       # all plans, cheapest first
     hypotheses:    list[tuple[dict[str, Intent], float]]
-    own_traj:      list[VesselState]      # own ship along the best plan, plan_dt apart
+    own_traj:      list[VesselState]      # own ship along the best plan, plan_dt apart (the DP reference)
     rollouts:      list[dict[str, list[VesselState]]]   # best plan, one per hypothesis
     plan_dt:       float
     kept:          Optional[ScoredPlan] = None   # continuation of the plan in force (in ranked)
+    hull_traj:     Optional[list[VesselState]] = None   # predicted hull along own_traj (with a HullModel)
 
 
 class ManoeuvreSearchPlanner:
@@ -367,6 +433,7 @@ class ManoeuvreSearchPlanner:
 
         own_cfg = self.configs[self.own_id]
         d_pass, d_coll = own_cfg.d_pass, own_cfg.resolved_d_coll()
+        d_safe = d_pass + w.pass_margin
         own_idx = self.index_map[self.own_id]
         idx_to_vid = {i: vid for vid, i in self.index_map.items()}
 
@@ -423,14 +490,24 @@ class ManoeuvreSearchPlanner:
                 overtake_side[vid] = 0 if abs(lateral) < 1.0 else (1 if lateral > 0 else -1)
             else:
                 overtaken_far.add(vid)
-        scored: list[tuple[ScoredPlan, list[dict[str, list[VesselState]]]]] = []
+        scored: list[tuple[ScoredPlan, list[dict[str, list[VesselState]]], Optional[list[VesselState]]]] = []
 
         # Submit every rollout first, so that with a pool they all run in parallel.
         sequences = self._sequences()
+        own_cfgs = [replace(own_cfg, pref_vel_seq=self.velocity_sequence(a)) for a in sequences]
+        refs = hulls = None
+        if c.hull is not None:
+            # The own ship ignores traffic, so its reference is the same alone.
+            refs = [vo_rollout({self.own_id: own_now}, c.plan_dt, H, {self.own_id: cfg},
+                               fixed_plan_ids={self.own_id})[self.own_id]
+                    for cfg in own_cfgs]
+            pos, vel = c.hull.track(np.array([[[s.north, s.east] for s in r] for r in refs]),
+                                    [own_now.vn, own_now.ve], c.plan_dt)
+            hulls = [_states(p, v, own_now.psi) for p, v in zip(pos, vel)]
         pending = []
-        for actions in sequences:
+        for i, actions in enumerate(sequences):
             configs = dict(self.configs)
-            configs[self.own_id] = replace(own_cfg, pref_vel_seq=self.velocity_sequence(actions))
+            configs[self.own_id] = own_cfgs[i]
             pending.append([
                 submit_rollout(
                     self.pool,
@@ -443,11 +520,12 @@ class ManoeuvreSearchPlanner:
                     colregs_classifier = copy.deepcopy(classifier) if classifier else None,
                     intents            = int_intents,
                     fixed_plan_ids     = {self.own_id},
+                    fixed_tracks       = {self.own_id: hulls[i]} if hulls else None,
                 )
                 for int_intents, graph in graphs
             ])
 
-        for actions, handles in zip(sequences, pending):
+        for i, (actions, handles) in enumerate(zip(sequences, pending)):
             safety, colregs, worst_d = [], [], {vid: math.inf for vid in others}
             rollouts = []
             for (assignment, _), (int_intents, graph), handle in zip(hyps, graphs, handles):
@@ -459,15 +537,15 @@ class ManoeuvreSearchPlanner:
                     tr = trajs[vid]
                     d = float(np.min(np.linalg.norm(
                         own - np.array([[s.north, s.east] for s in tr]), axis=1)))
-                    shortfall = (d_pass - d) / d_pass
+                    shortfall = (d_safe - d) / d_safe
                     if vid in overtaken:
                         d_ext, t_ext = _compute_dcpa_tcpa(trajs[self.own_id][-1], trajs[vid][-1])
                         if t_ext > 0:
                             d = min(d, d_ext)
-                            shortfall = max(shortfall, (d_pass - d_ext) / d_pass)
+                            shortfall = max(shortfall, (d_safe - d_ext) / d_safe)
                     worst_d[vid] = min(worst_d[vid], d)
                     if vid not in overtaken_far:
-                        shortfall = max(shortfall, self._bow_crossing_shortfall(own, tr, d_pass))
+                        shortfall = max(shortfall, self._bow_crossing_shortfall(own, tr, d_safe))
                         s_h += w.w_safe * max(0.0, shortfall) ** 2
                     s_h += w.w_coll * (d < d_coll)
                 safety.append(s_h)
@@ -533,24 +611,25 @@ class ManoeuvreSearchPlanner:
             }
             plan = ScoredPlan(actions=actions, cost=sum(terms.values()),
                               min_dist=worst_d, terms=terms)
-            scored.append((plan, rollouts))
+            scored.append((plan, rollouts, refs[i] if refs else None))
 
         scored.sort(key=lambda x: x[0].cost)
-        best, best_rollouts = scored[0]
+        best, best_rollouts, best_ref = scored[0]
         cont = self._continuation(t)
         kept = next((x for x in scored if x[0].actions == cont), None)
         if kept is not None and self._keep(kept[0], best):
-            best, best_rollouts = kept
+            best, best_rollouts, best_ref = kept
         if best.actions != cont:          # a new plan: its edges count from now
             self._kept = (best.actions, t)
         return SearchResult(
             best       = best,
-            ranked     = [p for p, _ in scored],
+            ranked     = [x[0] for x in scored],
             hypotheses = hyps,
-            own_traj   = best_rollouts[0][self.own_id],
+            own_traj   = best_ref if best_ref is not None else best_rollouts[0][self.own_id],
             rollouts   = best_rollouts,
             plan_dt    = c.plan_dt,
             kept       = kept[0] if kept is not None else None,
+            hull_traj  = best_rollouts[0][self.own_id] if best_ref is not None else None,
         )
 
     def _keep(self, kept: ScoredPlan, fresh: ScoredPlan) -> bool:
@@ -563,6 +642,18 @@ class ManoeuvreSearchPlanner:
         if cpa(kept) > cpa(fresh) + w.hold_safety_tol + 1e-9:
             return False
         return kept.cost - fresh.cost <= max(w.hold_abs_margin, w.hold_rel_margin * kept.cost)
+
+
+def _states(pos: np.ndarray, vel: np.ndarray, psi0: float) -> list[VesselState]:
+    """VesselStates from (n, 2) positions and velocities; the course is kept
+    while (nearly) stopped."""
+    out, psi = [], psi0
+    for (n, e), (vn, ve) in zip(pos, vel):
+        speed = math.hypot(vn, ve)
+        if speed > 1e-3:
+            psi = math.atan2(ve, vn)
+        out.append(VesselState(float(n), float(e), psi, speed))
+    return out
 
 
 def interpolate_track(traj: list[VesselState], dt: float, t: float) -> tuple[float, float, float]:

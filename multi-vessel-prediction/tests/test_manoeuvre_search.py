@@ -19,11 +19,11 @@ import pytest
 from colregs_planner.colregs_graph.colregs_classifier import ColregsClassifier
 from colregs_planner.colregs_graph.colregs_graph import VesselRole
 from colregs_planner.planner_api.manoeuvre_search import (
-    COST_CATEGORIES, DEFAULT_ACTIONS, ManoeuvreSearchPlanner, SearchAction, SearchConfig,
+    COST_CATEGORIES, DEFAULT_ACTIONS, HullModel, ManoeuvreSearchPlanner, SearchAction, SearchConfig,
     SearchWeights, cost_by_category, interpolate_track,
 )
 from colregs_planner.policies.search_dp import SearchDPPolicy
-from colregs_planner.prediction.vo_rollout import rank_hypotheses
+from colregs_planner.prediction.vo_rollout import rank_hypotheses, vo_rollout
 from colregs_planner.scenario_config import build_vo_agent_config, load_config
 from colregs_planner.vessel.state import Intent, VesselState
 
@@ -268,6 +268,12 @@ def test_search_weights_from_yaml():
     with pytest.raises(ValueError, match="hold_margin"):
         rs._search_config({"search": {"weights": {"hold_margin": 0.3}}})
 
+    # search_dp defaults: the milliAmpere hull model and a passing margin.
+    assert cfg.hull == HullModel() and cfg.weights.pass_margin == rs._SEARCH_DP_PASS_MARGIN
+    off = rs._search_config({"search": {"hull": False, "weights": {"pass_margin": 0.0}}})
+    assert off.hull is None and off.weights.pass_margin == 0.0
+    assert rs._search_config({"search": {"hull": {"a_max": 0.1}}}).hull.a_max == 0.1
+
 
 def test_drawn_prediction_follows_committed_plan():
     (traj, _, _, snaps, filt, hist), log, config, vcfgs, pred = _simulate(HEAD_ON, "search_dp")
@@ -329,6 +335,43 @@ def test_fixed_plan_stop_holds_vessel_in_rollout():
     assert [round(float(tr[k].north), 6) for k in (0, 5, 10)] == [0.0, 0.0, 0.0]
     assert tr[15].north == pytest.approx(7.5)
     assert all(s.psi == 0.0 for s in tr)                  # heading kept while stopped
+
+
+def test_hull_model_overshoots_a_stop():
+    # Reference at 1.5 m/s that stops dead at t = 10 s: the hull runs on.
+    t = np.arange(41.0)
+    ref = np.stack([1.5 * np.minimum(t, 10.0), np.zeros_like(t)], axis=1)[None]
+    pos, vel = HullModel().track(ref, [1.5, 0.0], 1.0)
+    overshoot = pos[0, :, 0] - 15.0
+    assert 4.0 < overshoot[-1] < 12.0                     # DP stops metres past the reference
+    assert np.all(np.diff(pos[0, :, 0]) >= -1e-9)          # without backing up onto it
+    assert np.linalg.norm(vel[0, -1]) < 0.05
+
+
+def test_hull_model_scores_the_hull_track_and_keeps_the_reference():
+    planner, states, graph, _ = _planner(edge_s=15.0, plan_dt=1.0, horizon_s=60.0, hull=HullModel())
+    result = planner.plan(states, graph, t=0.0)
+    hull = result.hull_traj
+    assert hull is not None and len(hull) == len(result.own_traj)
+    # Every rollout replays the hull track for the own ship.
+    for ro in result.rollouts:
+        assert [(s.north, s.east) for s in ro["ego"]] == [(s.north, s.east) for s in hull]
+    # The reference (what DP follows) is the plan without the hull's lag.
+    seq = replace(planner.configs["ego"], pref_vel_seq=planner.velocity_sequence(result.best.actions))
+    ref = vo_rollout({"ego": states["ego"]}, 1.0, 60, {"ego": seq}, fixed_plan_ids={"ego"})["ego"]
+    assert [(s.north, s.east) for s in result.own_traj] == [(s.north, s.east) for s in ref]
+
+
+def test_pass_margin_charges_plans_that_only_just_clear_d_pass():
+    plain, states, graph, _ = _planner(edge_s=15.0, plan_dt=1.0, horizon_s=60.0)
+    margin, *_ = _planner(edge_s=15.0, plan_dt=1.0, horizon_s=60.0,
+                          weights=SearchWeights(pass_margin=10.0))
+    a = {p.actions: p for p in plain.plan(states, graph, t=0.0).ranked}
+    b = {p.actions: p for p in margin.plan(states, graph, t=0.0).ranked}
+    d_pass = plain.configs["ego"].d_pass
+    assert all(b[k].terms["safety"] >= a[k].terms["safety"] - 1e-9 for k in a)
+    clear = [k for k in a if d_pass <= min(a[k].min_dist.values()) < d_pass + 10.0]
+    assert clear and all(a[k].terms["safety"] == 0.0 < b[k].terms["safety"] for k in clear)
 
 
 def test_stop_action_zero_velocity_and_costs_time():

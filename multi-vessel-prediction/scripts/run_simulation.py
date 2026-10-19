@@ -71,7 +71,7 @@ from colregs_planner.policies.cto import CTOPolicy
 from colregs_planner.policies.predictor_dp import PredictorDPPolicy
 from colregs_planner.policies.search_dp import SearchDPPolicy
 from colregs_planner.planner_api.manoeuvre_search import (
-    COST_CATEGORIES, ManoeuvreSearchPlanner, SearchConfig, SearchWeights, cost_by_category,
+    COST_CATEGORIES, HullModel, ManoeuvreSearchPlanner, SearchConfig, SearchWeights, cost_by_category,
     interpolate_track,
 )
 from colregs_planner.colregs_graph.colregs_graph import apply_responsiveness
@@ -128,25 +128,38 @@ def _search_pool(n_workers: int) -> Optional[RolloutPool]:
     return _SEARCH_POOLS[n_workers]
 
 
+# search_dp runs on the milliAmpere (see simulate_scenario), so by default it
+# scores plans along the hull track HullModel predicts for it, and keeps a
+# margin for that model's error beyond d_pass.
+_SEARCH_DP_HULL        = True
+_SEARCH_DP_PASS_MARGIN = 6.0    # [m]
+
+
 def _search_config(vcfg: dict) -> SearchConfig:
     """SearchConfig from a vessel's optional `search:` block: its scalar
     fields, plus a `weights:` sub-block of SearchWeights overrides, e.g.
 
         search:
           edge_s: 7.5
-          weights: {hold_rel_margin: 0.3, w_dev: 4.0}
+          hull: false        # or a dict of HullModel overrides
+          weights: {hold_rel_margin: 0.3, w_dev: 4.0, pass_margin: 0.0}
+
+    Unlike the SearchConfig defaults, hull is on and pass_margin is
+    _SEARCH_DP_PASS_MARGIN unless the block says otherwise.
     """
     raw = dict(vcfg.get("search") or {})
-    weights = dict(raw.pop("weights", None) or {})
+    weights = {"pass_margin": _SEARCH_DP_PASS_MARGIN, **(raw.pop("weights", None) or {})}
+    hull = raw.pop("hull", _SEARCH_DP_HULL)
     valid = {"depth", "edge_s", "plan_dt", "horizon_s", "top_k"}
     unknown = set(raw) - valid
     if unknown:
-        raise ValueError(f"Unknown search key(s) {sorted(unknown)}. Valid: {sorted(valid | {'weights'})}")
+        raise ValueError(f"Unknown search key(s) {sorted(unknown)}. Valid: {sorted(valid | {'weights', 'hull'})}")
     valid_w = set(vars(SearchWeights()))
     unknown = set(weights) - valid_w
     if unknown:
         raise ValueError(f"Unknown search.weights key(s) {sorted(unknown)}. Valid: {sorted(valid_w)}")
-    return SearchConfig(**raw, weights=SearchWeights(**weights))
+    return SearchConfig(**raw, weights=SearchWeights(**weights),
+                        hull=HullModel(**hull) if isinstance(hull, dict) else HullModel() if hull else None)
 
 
 def _build_policy(
@@ -215,6 +228,9 @@ def _build_policy(
             for v in config.vessels
         }
         search_cfg = _search_config(vcfg)
+        if search_cfg.hull is not None and search_cfg.hull.reanchor_s is None:
+            # The hull model re-anchors as the policy does at each replan.
+            search_cfg.hull.reanchor_s = float(vcfg.get("replan_s", 5.0))
         # prediction.parallel_workers also sizes the planner's pool: "auto"
         # gives one worker per plan rollout, at most CPU cores - 1.
         n_workers = resolve_workers(

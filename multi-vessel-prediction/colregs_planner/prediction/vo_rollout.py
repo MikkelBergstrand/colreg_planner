@@ -222,6 +222,7 @@ def vo_rollout(
     colregs_classifier: Optional[ColregsClassifier]                  = None,
     intents:            Optional[dict[int, Intent]]                  = None,
     fixed_plan_ids:     Optional[set[str]]                           = None,
+    fixed_tracks:       Optional[dict[str, list[VesselState]]]       = None,
     _timings:           Optional[dict]                               = None,
 ) -> dict[str, list[VesselState]]:
     """Predict multi-vessel trajectories assuming all vessels follow a VO policy.
@@ -265,6 +266,10 @@ def vo_rollout(
         in agent_configs), while keeping their COLREGs roles, so the other
         vessels react to the plan as to a responsive vessel.  Used to
         evaluate own-ship manoeuvres.
+    fixed_tracks : optional vessel id -> states at k * dt, k = 0..n_steps
+        (at least that many). Like fixed_plan_ids, but the vessel replays
+        the given track exactly instead of tracking a plan through its
+        motion model. track[0] must be its initial state.
 
     Returns
     -------
@@ -362,7 +367,8 @@ def vo_rollout(
         idx = vessel_index_map[vid] if vessel_index_map else i
         return intents is not None and intents.get(idx) == Intent.NON_RESPONSIVE
 
-    fixed = fixed_plan_ids or set()
+    tracks = fixed_tracks or {}
+    fixed = (fixed_plan_ids or set()) | set(tracks)
     other_ids: dict[str, list[str]] = {
         vid: ([] if _non_responsive(i, vid) or vid in fixed
               else [o for o in vessel_ids if o != vid])
@@ -416,14 +422,15 @@ def vo_rollout(
                 current[vid],
                 [current[other] for other in other_ids[vid]],
             )
-            for vid in vessel_ids
+            for vid in vessel_ids if vid not in tracks
         }
         if _timings is not None:
             _ta = time.perf_counter(); _timings["rol.select_action"].append(_ta - _ts); _ts = _ta
 
         # Propagate all vessels forward with their chosen actions
         for vid in vessel_ids:
-            new_state = adapters[vid].step(actions[vid], dt)
+            new_state = (tracks[vid][step_idx + 1] if vid in tracks
+                         else adapters[vid].step(actions[vid], dt))
             current[vid] = new_state
             trajectories[vid].append(new_state)
 
