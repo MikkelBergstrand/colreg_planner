@@ -146,7 +146,7 @@ import numpy as np
 from colregs_planner.colregs_graph.colregs_classifier import ColregsClassifier, _compute_dcpa_tcpa
 from colregs_planner.colregs_graph.colregs_graph import ColregsGraph, VesselRole, apply_responsiveness
 from colregs_planner.prediction.parallel import RolloutPool, submit_rollout
-from colregs_planner.prediction.vo_rollout import VOAgentConfig, rank_hypotheses, vo_rollout
+from colregs_planner.prediction.vo_rollout import VOAgentConfig, rank_hypotheses
 from colregs_planner.vessel.state import Intent, VesselState, wrap_angle
 
 
@@ -498,9 +498,12 @@ class ManoeuvreSearchPlanner:
         refs = hulls = None
         if c.hull is not None:
             # The own ship ignores traffic, so its reference is the same alone.
-            refs = [vo_rollout({self.own_id: own_now}, c.plan_dt, H, {self.own_id: cfg},
-                               fixed_plan_ids={self.own_id})[self.own_id]
-                    for cfg in own_cfgs]
+            refs = [h.result()[self.own_id] for h in [
+                submit_rollout(self.pool, initial_states={self.own_id: own_now}, dt=c.plan_dt,
+                               n_steps=H, agent_configs={self.own_id: cfg},
+                               fixed_plan_ids={self.own_id})
+                for cfg in own_cfgs
+            ]]
             pos, vel = c.hull.track(np.array([[[s.north, s.east] for s in r] for r in refs]),
                                     [own_now.vn, own_now.ve], c.plan_dt)
             hulls = [_states(p, v, own_now.psi) for p, v in zip(pos, vel)]
