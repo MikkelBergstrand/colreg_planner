@@ -1075,7 +1075,7 @@ def _draw_colregs_graph(
             lx = ea + frac * (eb - ea)
             ly = na + frac * (nb - na)
             ax.text(
-                lx, ly, _ROLE_LABEL[role],
+                lx, ly, _ROLE_LABEL[role] + (f" {edge.rule}" if edge.rule else ""),
                 fontsize=fs * 0.8, ha="center", va="center",
                 color=mono_label or _ROLE_COLOR[role], fontweight="bold",
                 bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.82, ec="none"),

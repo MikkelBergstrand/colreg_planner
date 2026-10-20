@@ -1,0 +1,66 @@
+# A small ferry (ego, the milliAmpere) crosses a channel, 40 m wide and
+# running north, while a larger vessel comes down it from the ferry's port
+# side.
+#
+# By Rule 15 alone the ferry is the stand-on vessel and the other vessel
+# gives way. In a narrow channel, Rule 9(d) has the ferry not impede a
+# vessel that can navigate only within the channel (channel_bound), so the
+# classifier makes the ferry give way and the other vessel stand on: it
+# keeps to the channel and the ferry waits or passes astern.
+# scenario.channels holds the channel. It has no banks (scenario.hazards),
+# so the vessels could leave it; the roles come from Rule 9 alone.
+#
+# Run:
+#   python scripts/run_simulation.py --config scenarios/simulation/milliampere/canal_ferry_crossing.yaml
+
+scenario:
+  dt: 0.5
+  t_horizon: 100.0
+  noise_std_pos: 0.0
+  noise_std_vel: 0.0
+  seed: 42
+  channels:
+    - centreline: [[-100.0, 40.0], [300.0, 40.0]]
+      width: 40.0
+  vessels:
+    ego:
+      speed: 1.0
+      heading: 90.0
+      sim_model: milliampere
+      policy: search_dp
+      tcpa_threshold: 100.0
+      d_pass: 20.0
+      intent: responsive
+      los_lookahead: 30.0
+    target_1:
+      encounter: crossing_port
+      range: 60.0
+      speed: 1.5
+      sim_model: ct_decoupled_ar
+      policy: vo_analytic
+      tcpa_threshold: 100.0
+      d_pass: 20.0
+      intent: responsive
+      los_lookahead: 30.0
+      channel_bound: true
+  classifier:
+    d_u: 30.0
+    dcpa_max: 450.0
+    d_a: 3000.0
+prediction:
+  enabled: true
+  use_responding_filter: true
+  horizon: 100.0
+  update_dt: 0.5
+  policy_type: vo_analytic
+  rollout_model: ct_decoupled_ar
+  reclassify_in_rollout: false
+  top_k_hypotheses: 1
+viz:
+  trail_length: 0
+  realtime_factor: 100.0
+  responding_panel: true
+  padding: 30.0
+  vessel:
+    length: 12.0
+    width: 3.6

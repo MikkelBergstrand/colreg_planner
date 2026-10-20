@@ -13,6 +13,7 @@ from typing import Optional
 import numpy as np
 import yaml
 
+from colregs_planner.colregs_graph.channel import Channel
 from colregs_planner.colregs_graph.colregs_classifier import ColregsClassifier
 from colregs_planner.vessel.encounter import ScenarioConfig, build_scenario
 from colregs_planner.vessel.state import VesselInit, Intent
@@ -94,7 +95,7 @@ class PredictionConfig:
 SIM_VESSEL_KEYS = frozenset({
     "speed", "heading", "intent", "encounter", "range", "lateral_offset_m",
     "sim_model", "policy", "turn_rate", "omega_max", "tcpa_method",
-    "replan_s", "search", "actual",
+    "replan_s", "search", "actual", "channel_bound",
 })
 
 
@@ -215,6 +216,17 @@ def load_config(path: Path) -> tuple[ScenarioConfig, dict[str, dict], VizConfig,
     # clear of them.
     config.hazards = [[[float(n), float(e)] for n, e in poly] for poly in (s.get("hazards") or [])]
     config.hazard_map = HazardMap.from_polygons(config.hazards) if config.hazards else None
+    # Narrow channels (scenario.channels, Rule 9): each a centreline of
+    # [north, east] vertices [m] and a width [m]. Vessels with
+    # channel_bound: true can navigate only within them. Both go to every
+    # ColregsClassifier through config.classifier.
+    channels = tuple(Channel(**ch) for ch in (s.get("channels") or []))
+    if channels:
+        config.classifier["channels"] = channels
+        config.classifier["channel_bound"] = frozenset(
+            i for i, vi in enumerate(config.vessels)
+            if (vessel_cfgs.get(vi.vessel_id) or {}).get("channel_bound")
+        )
 
     pred_cfg = PredictionConfig.from_dict(p)
 

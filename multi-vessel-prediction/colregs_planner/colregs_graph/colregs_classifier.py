@@ -14,6 +14,7 @@ Classification pipeline (per unordered pair {a, b}):
     3. Temporal vote    — forward-project to CPA, take priority-weighted mode
     4. Hysteresis       — maintain active scenario until vessels are d_u apart
     5. Role assignment  — map EncounterType to (role_a, role_b) via ENCOUNTER_ROLES
+    6. Narrow channels  — Rule 9 overrides the roles (see ColregsClassifier)
 
 Coordinate convention: NED, heading in radians CW from North.
 
@@ -34,7 +35,10 @@ from typing import Optional
 
 from colregs_planner.vessel.state import VesselState
 from colregs_planner.vessel.encounter import EncounterType
-from colregs_planner.colregs_graph.colregs_graph import ColregsGraph, ColregsEdge, ENCOUNTER_ROLES
+from colregs_planner.colregs_graph.channel import Channel
+from colregs_planner.colregs_graph.colregs_graph import (
+    ColregsGraph, ColregsEdge, ENCOUNTER_ROLES, VesselRole,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +213,16 @@ class ColregsClassifier:
     cleared nor reclassified, unless the vessels are more than d_a apart.
     Without this, an overtaking vessel that turns away hard makes the TCPA
     go negative and loses the encounter mid-overtake.
+
+    Narrow channels (Rule 9): with channels set, a vessel in channel_bound
+    (it can navigate safely only within the channel) that is navigating
+    along a channel stands on toward a vessel that is not: that vessel gives
+    way, whatever the encounter. If it is crossing the channel this is Rule
+    9(d), otherwise 9(b) (a small vessel shall not impede). The edge's rule
+    records which. Between two channel-bound vessels, or two that are not,
+    the steering rules apply as usual. The override is applied to each
+    step's edge, so it follows the vessels in and out of the channel;
+    the classified encounter and its hysteresis are unchanged.
     """
 
     dcpa_max:    float = 1500.0
@@ -218,6 +232,8 @@ class ColregsClassifier:
     w_reinforce: float = 1.0
     w_forget:    float = 0.01
     n_clear:     int   = 5
+    channels:    tuple[Channel, ...] = ()
+    channel_bound: frozenset[int]    = frozenset()   # vessel indices that can navigate only within a channel
 
     _pair_states: dict[tuple[int, int], _PairState] = field(
         default_factory=dict, init=False, repr=False
@@ -250,10 +266,32 @@ class ColregsClassifier:
                     id_b, states[id_b],
                     self._pair_states[key],
                 )
+                if edge is not None and self.channels:
+                    edge = self._rule9(edge, states[id_a], states[id_b])
                 if edge is not None:
                     graph.add_edge(edge)
 
         return graph
+
+    def _rule9(self, edge: ColregsEdge, a: VesselState, b: VesselState) -> ColregsEdge:
+        """The edge with Rule 9's roles where a channel-bound vessel navigating
+        along a channel meets one that is not (see the class docstring)."""
+        for ch in self.channels:
+            along_a, along_b = ch.navigating_along(a), ch.navigating_along(b)
+            bound_a = along_a and edge.vessel_a in self.channel_bound
+            bound_b = along_b and edge.vessel_b in self.channel_bound
+            if bound_a == bound_b:
+                continue
+            other_along = along_b if bound_a else along_a
+            rule = "9(b)" if other_along else "9(d)"
+            stand, give = VesselRole.STAND_ON, VesselRole.GIVE_WAY
+            return ColregsEdge(
+                vessel_a=edge.vessel_a, vessel_b=edge.vessel_b,
+                role_a=stand if bound_a else give, role_b=give if bound_a else stand,
+                has_non_responsive=edge.has_non_responsive,
+                encounter_type=edge.encounter_type, rule=rule,
+            )
+        return edge
 
     def reset(self) -> None:
         """Clear all hysteresis state (e.g. between episodes)."""

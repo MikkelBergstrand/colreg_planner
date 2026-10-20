@@ -1087,8 +1087,10 @@ def main() -> None:
              responding_history=responding_history or None,
              stop_time=args.stop_time,
              goals=goals,
-             chart_bg=(ChartBackground(land_polys=[np.array(p)[:, ::-1] for p in config.hazards])
-                       if config.hazards else None))
+             chart_bg=(ChartBackground(
+                 land_polys=[np.array(p)[:, ::-1] for p in config.hazards],
+                 channel_edges=[e[:, ::-1] for ch in config.classifier.get("channels", ()) for e in ch.edges()],
+             ) if config.hazards or config.classifier.get("channels") else None))
 
     # Standalone p(responding)-vs-time figure (viz.responding_plot), cropped to
     # viz.responding_plot_window if set. Independent of the live panel.

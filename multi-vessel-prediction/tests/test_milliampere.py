@@ -325,9 +325,9 @@ def test_milliampere_scenario_runs(path):
     config, vcfgs, _, pred = load_config(path)
     assert vcfgs["ego"]["sim_model"] == "milliampere"
     # A non-responsive ego is a test vessel, not the ship under our control.
-    # Only search_dp plans around scenario.hazards.
+    # The terrain and channel scenarios show the search planner (search_dp).
     expected = ("vo_analytic" if vcfgs["ego"].get("intent") == "non_responsive"
-                else "search_dp" if config.hazards else "predictor_dp")
+                else "search_dp" if config.hazards or config.classifier.get("channels") else "predictor_dp")
     assert vcfgs["ego"]["policy"] == expected
     traj, *_ = _simulate(config, vcfgs, pred)
 

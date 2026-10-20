@@ -38,6 +38,13 @@ CHART_STYLE: dict[str, dict] = {
         "alpha":     1.0,
         "zorder":    3,
     },
+    "channel": {
+        "color":     "#4a6fa5",
+        "linewidth": 0.9,
+        "linestyle": (0, (6, 4)),
+        "alpha":     0.8,
+        "zorder":    2,
+    },
     "depth_contour": {
         "color":     "#7ab8d4",
         "linewidth": 0.4,
@@ -115,6 +122,18 @@ def render_chart_background(
             bg.coastline_segs,
             colors=st["color"],
             linewidths=st["linewidth"],
+            alpha=st["alpha"],
+            zorder=st["zorder"],
+        ))
+
+    # Narrow-channel limits, dashed
+    if bg.channel_edges:
+        st = s["channel"]
+        ax.add_collection(LineCollection(
+            bg.channel_edges,
+            colors=st["color"],
+            linewidths=st["linewidth"],
+            linestyles=[st["linestyle"]],
             alpha=st["alpha"],
             zorder=st["zorder"],
         ))

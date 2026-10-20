@@ -95,6 +95,7 @@ class ChartBackground:
     shoal_polys:     list[np.ndarray] = field(default_factory=list)
     coastline_segs:  list[np.ndarray] = field(default_factory=list)
     depth_contours:  list[np.ndarray] = field(default_factory=list)
+    channel_edges:   list[np.ndarray] = field(default_factory=list)   # narrow-channel limits (Rule 9)
     ref_lat:         float = 0.0
     ref_lon:         float = 0.0
     layer_counts:    dict[str, int] = field(default_factory=dict)
@@ -105,6 +106,7 @@ class ChartBackground:
             and len(self.shoal_polys)    == 0
             and len(self.coastline_segs) == 0
             and len(self.depth_contours) == 0
+            and len(self.channel_edges)  == 0
         )
 
 

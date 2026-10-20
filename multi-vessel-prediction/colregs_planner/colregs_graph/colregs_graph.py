@@ -24,6 +24,9 @@ class ColregsEdge:
     has_non_responsive: bool = False
     # Encounter geometry from vessel_a's perspective (None when unknown).
     encounter_type: EncounterType | None = None
+    # The rule that set the roles when it is not the encounter's own
+    # steering rule, e.g. "9(d)" (ColregsClassifier, narrow channels).
+    rule: str | None = None
 
 
 @dataclass
@@ -110,6 +113,7 @@ def apply_responsiveness(
             role_b=role_b,
             has_non_responsive=True,
             encounter_type=edge.encounter_type,
+            rule=edge.rule,
         ))
 
     return new_graph
