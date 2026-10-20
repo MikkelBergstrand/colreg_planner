@@ -13,7 +13,7 @@
 
 scenario:
   dt: 0.5
-  t_horizon: 75.0
+  t_horizon: 100.0
   noise_std_pos: 0.0
   noise_std_vel: 0.0
   seed: 42
@@ -27,6 +27,8 @@ scenario:
       d_pass: 22.5
       intent: responsive
       los_lookahead: 30.0
+      search:
+        edge_s: 15.0
     target_1:
       encounter: head_on
       range: 120.0
@@ -72,20 +74,20 @@ prediction:
   filter_rollout_model: ct_decoupled_ar
   show_nominal_comparison: false
   reclassify_in_rollout: false
-  top_k_hypotheses: 1
+  top_k_hypotheses: 4
   dcpa_eval:
     enabled: false
     times_s:
-    - 15.0
-    - 20.5
+      - 15.0
+      - 20.5
     horizon_s: null
     pairs:
-    - - target_1
-      - ego
-    - - target_1
-      - target_2
-    - - target_1
-      - target_3
+      - - target_1
+        - ego
+      - - target_1
+        - target_2
+      - - target_1
+        - target_3
     out: null
 viz:
   padding: 30.0

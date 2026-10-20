@@ -16,7 +16,7 @@ import yaml
 from colregs_planner.colregs_graph.colregs_classifier import ColregsClassifier
 from colregs_planner.vessel.encounter import ScenarioConfig, build_scenario
 from colregs_planner.vessel.state import VesselInit, Intent
-from colregs_planner.prediction.vo_rollout import VOAgentConfig
+from colregs_planner.prediction.vo_rollout import VOAgentConfig, _RUNTIME_FIELDS
 from colregs_planner.visualization.live_viz import VizConfig
 
 
@@ -93,8 +93,53 @@ class PredictionConfig:
 SIM_VESSEL_KEYS = frozenset({
     "speed", "heading", "intent", "encounter", "range", "lateral_offset_m",
     "sim_model", "policy", "turn_rate", "omega_max", "tcpa_method",
-    "replan_s", "search",
+    "replan_s", "search", "actual",
 })
+
+
+def sim_vessel_cfg(vcfg: dict) -> dict:
+    """The vessel block the simulated vessel itself runs on: vcfg with its
+    ``actual`` overrides applied. The predictor keeps using vcfg, so
+    ``actual`` is how a vessel really behaves, unknown to the predictor."""
+    return {**{k: v for k, v in vcfg.items() if k != "actual"}, **(vcfg.get("actual") or {})}
+
+
+def _apply_mismatch(vessel_cfgs: dict[str, dict], mismatch: dict) -> None:
+    """Fill each target's ``actual`` block from scenario.mismatch.
+
+    mismatch.jitter maps a VO parameter to a relative spread r: the target
+    really uses its configured value (or the default) times a factor drawn
+    uniformly from [1 - r, 1 + r], with mismatch.seed. Values a vessel sets
+    in ``actual`` itself are kept. Ego is the ship whose predictions are
+    being tested, so it is left alone.
+    """
+    unknown = set(mismatch) - {"seed", "jitter"}
+    if unknown:
+        raise ValueError(f"Unknown scenario.mismatch key(s) {sorted(unknown)}. Valid: ['jitter', 'seed']")
+    jitter = mismatch.get("jitter") or {}
+    _check_vo_keys(jitter, "scenario.mismatch.jitter")
+    rng = np.random.default_rng(mismatch.get("seed", 0))
+    for vid, vcfg in sorted(vessel_cfgs.items()):
+        if vid == "ego":
+            continue
+        actual = dict(vcfg.get("actual") or {})
+        # Sorted, so a seed draws the same values however the YAML orders its keys.
+        for key, r in sorted(jitter.items()):
+            base = vcfg.get(key, getattr(VOAgentConfig, key))
+            if base is None or not isinstance(base, (int, float)):
+                raise ValueError(f"scenario.mismatch.jitter: {key} has no numeric value to jitter")
+            value = base * rng.uniform(1.0 - r, 1.0 + r)
+            if key not in actual:
+                actual[key] = int(round(value)) if isinstance(base, int) else round(float(value), 3)
+        if actual:
+            vcfg["actual"] = actual
+
+
+def _check_vo_keys(d: dict, where: str) -> None:
+    tunable = {f.name for f in fields(VOAgentConfig)} - _RUNTIME_FIELDS
+    unknown = set(d) - tunable
+    if unknown:
+        raise ValueError(f"Unknown VO parameter(s) {sorted(unknown)} in {where}. Valid: {sorted(tunable)}")
 
 
 def build_vo_agent_config(vcfg: dict, vi: VesselInit, **overrides) -> VOAgentConfig:
@@ -130,6 +175,10 @@ def load_config(path: Path) -> tuple[ScenarioConfig, dict[str, dict], VizConfig,
 
 
     vessel_cfgs = s.get("vessels", {})
+    for vid, vcfg in vessel_cfgs.items():
+        _check_vo_keys(vcfg.get("actual") or {}, f"scenario.vessels.{vid}.actual")
+    if s.get("mismatch"):
+        _apply_mismatch(vessel_cfgs, s["mismatch"])
     ego_cfg     = vessel_cfgs.get("ego", {})
     target_cfgs = {k: cfg for k, cfg in vessel_cfgs.items() if k != "ego"}
 

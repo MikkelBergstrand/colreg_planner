@@ -84,7 +84,9 @@ from colregs_planner.prediction.vo_rollout import (
 from colregs_planner.visualization.live_viz import (
     PlanCosts, PlanOverlay, VesselMeta, SimInfo, VizConfig, run_live, save_responding_plot, VESSEL_COLORS,
 )
-from colregs_planner.scenario_config import PredictionConfig, build_vo_agent_config, load_config
+from colregs_planner.scenario_config import (
+    PredictionConfig, build_vo_agent_config, load_config, sim_vessel_cfg,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -667,7 +669,9 @@ def simulate_scenario(
 
     vessels: list[Vessel] = []
     for vessel_idx, vi in enumerate(config.vessels):
-        vcfg = vessel_cfgs.get(vi.vessel_id, {})
+        # The simulated vessel runs on its `actual` parameters; everything
+        # predicted about it below keeps using vessel_cfgs.
+        vcfg = sim_vessel_cfg(vessel_cfgs.get(vi.vessel_id, {}))
         vessels.append(Vessel.create(
             vessel_id = vi.vessel_id,
             initial   = vi.state,
@@ -947,6 +951,10 @@ def main() -> None:
               f"model={vcfg.get('sim_model', 'ct_decoupled'):14s}  "
               f"policy={vcfg.get('policy', 'constant_velocity')}")
     print(f"Duration : {config.t_horizon} s  |  dt={config.dt} s  |  steps={config.n_steps}")
+    for vid, vcfg in vessel_cfgs.items():
+        if vcfg.get("actual"):
+            print(f"  {vid:12s}  actually uses (unknown to the predictor): "
+                  + ", ".join(f"{k}={v}" for k, v in vcfg["actual"].items()))
 
     plan_log: dict[str, SearchDPPolicy] = {}
     (trajectories, policy_debug, colregs_graphs, classifier_snapshots,

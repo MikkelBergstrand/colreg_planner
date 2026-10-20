@@ -14,7 +14,8 @@ others must avoid and keeps its plain policy. Targets keep their kinematic
 models and VO policies.
 
 Scaled, besides the keys set in each file (speed, range, d_pass,
-lateral_offset_m):
+lateral_offset_m, and d_pass, d_coll, los_lookahead in a
+vessel's `actual` block):
   * los_lookahead (VOAgentConfig default, set per vessel)
   * the overtaking start offset (encounter._OVERTAKING_LATERAL)
   * the COLREGs classifier distances d_u, dcpa_max, d_a (scenario.classifier)
@@ -44,6 +45,9 @@ SRC_DIR  = REPO / "scenarios/simulation"
 OUT_DIR  = SRC_DIR / "milliampere"
 
 _VESSEL_LENGTH_KEYS = ("speed", "range", "d_pass", "lateral_offset_m")
+# Lengths in a vessel's `actual` block (scenario.mismatch.jitter is relative
+# and needs no scaling).
+_ACTUAL_LENGTH_KEYS = ("d_pass", "d_coll", "los_lookahead")
 
 
 def scale_config(raw: dict, k: float) -> dict:
@@ -56,6 +60,9 @@ def scale_config(raw: dict, k: float) -> dict:
         for key in _VESSEL_LENGTH_KEYS:
             if key in v:
                 v[key] = s(v[key])
+        for key in _ACTUAL_LENGTH_KEYS:
+            if key in (v.get("actual") or {}):
+                v["actual"][key] = s(v["actual"][key])
         if vid == "ego":
             v["sim_model"] = "milliampere"
             # A non-responsive ego is a test vessel the others must avoid, not

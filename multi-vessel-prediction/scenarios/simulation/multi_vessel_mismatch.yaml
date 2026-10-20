@@ -1,0 +1,99 @@
+# Simulation: multi_vessel.yaml with model mismatch. The responding vessels
+# (V3, V4) no longer behave exactly as the predictor assumes: each really
+# uses VO parameters jittered around the configured ones (scenario.mismatch),
+# while the predictor and the responding filter keep the configured values.
+# With seed 1, V4 keeps about 47 m instead of the assumed 75 m, so its
+# avoidance manoeuvre falls short of the prediction and the filter flags this
+# compliant vessel as non-responding from about t = 17 s. V2 is still the
+# genuinely non-responding vessel and is detected as in multi_vessel.yaml.
+#
+# Run:
+#   python scripts/run_simulation.py --config scenarios/simulation/multi_vessel_mismatch.yaml
+#
+# See scenarios/README.md (Model mismatch) for the mismatch keys, and
+# scenarios/viz_reference.yaml for the full list of plotting options (anything
+# not set here is left at its default).
+
+scenario:
+  dt: 0.5 # timestep [s]
+  t_horizon: 75.0 # simulation duration [s]
+  noise_std_pos: 0.0 # position observation noise [m], 0 = noiseless
+  noise_std_vel: 0.0 # velocity observation noise [m/s]
+  seed: 42
+  mismatch:                       # targets really use jittered VO parameters (README: Model mismatch)
+    seed: 1
+    jitter: {d_pass: 0.4, tcpa_threshold: 0.4, los_lookahead: 0.4, course_budget_deg: 0.3}
+
+  vessels:
+    ego:
+      speed: 5.0
+      heading: 0.0 # [deg, NED] — 0 = north
+      sim_model: ct_decoupled_ar
+      policy: vo_analytic
+      tcpa_threshold: 50.0 # [s] react when TCPA < this
+      d_pass: 75.0 # [m] desired passing distance
+      intent: responsive
+
+    target_1: # the non-responding vessel (V2 in the paper figure)
+      encounter: head_on
+      range: 400.0
+      speed: 5.0
+      sim_model: ct_decoupled_ar
+      policy: vo_analytic
+      tcpa_threshold: 50.0
+      d_pass: 75.0
+      intent: non_responsive # always holds STAND-ON — never yields
+
+    target_2:
+      encounter: crossing_port
+      range: 200.0
+      speed: 4.0
+      sim_model: ct_decoupled_ar
+      policy: vo_analytic
+      tcpa_threshold: 50.0
+      d_pass: 75.0
+      intent: responsive
+
+    target_3:
+      encounter: overtaking_ahead
+      range: 200.0
+      speed: 3.0
+      sim_model: ct_decoupled_ar
+      policy: vo_analytic
+      tcpa_threshold: 50.0
+      d_pass: 75.0
+      intent: responsive
+
+prediction:
+  enabled: true
+  horizon: 120.0 # [s] how far ahead to predict at each step
+  update_dt: 0.5 # [s] recompute prediction every this many seconds
+  use_responding_filter: true
+  policy_type: vo_analytic
+  rollout_model: ct_decoupled_ar
+  filter_rollout_model: ct_decoupled_ar
+  show_nominal_comparison: false
+  reclassify_in_rollout: false   # re-run the COLREGs classifier at every rollout step (paper Sec. V-D); false = fixed graph, faster
+  top_k_hypotheses: 4        # draw the K most-likely responsiveness-hypothesis trajectory
+                              # bundles live (1 = top-1 only). With N vessels there are 2^N
+                              # hypotheses; K is capped at that automatically.
+
+  # DCPA evaluation: at each listed sim time, roll a prediction forward from
+  # the true state and compare its DCPA against the ground truth, for both
+  # the top-1 responsiveness hypothesis and the "assume everyone responsive"
+  # baseline. t=15.0s is before V2 is detected non-responsive, t=20.5s is after.
+  dcpa_eval:
+    enabled: false
+    times_s: [15.0, 20.5]
+    horizon_s: null # null = prediction.horizon
+    pairs: [[target_1, ego], [target_1, target_2], [target_1, target_3]]
+    out: null # optional CSV path, e.g. outputs/dcpa_multi_vessel.csv
+
+viz:
+  padding: 100.0 # [m] axis margin — tight for this close-quarters scenario
+  trail_length: 0 # 0 = full trail
+  responding_under_graph: true # p(r=R)-vs-time panel stacked under the interaction graph
+  font_size: 20 # paper-readable text
+  vessel_label_fontsize: 24
+  center_ego_x: true # centre the ego vessel's start position horizontally
+  fps: 10

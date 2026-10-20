@@ -263,6 +263,8 @@ name = "colregs-planner"
 version = "0.1.1"
 source = { editable = "." }
 dependencies = [
+    { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "matplotlib", version = "3.11.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -338,6 +340,7 @@ requires-dist = [
     { name = "contextily", marker = "extra == 'plots'", specifier = ">=1.5" },
     { name = "h5py", marker = "extra == 'ais'", specifier = ">=3.10" },
     { name = "h5py", marker = "extra == 'nominal'", specifier = ">=3.10" },
+    { name = "matplotlib", specifier = ">=3.10.9" },
     { name = "matplotlib", marker = "extra == 'plots'", specifier = ">=3.8" },
     { name = "matplotlib", marker = "extra == 'sim'", specifier = ">=3.8" },
     { name = "numpy", specifier = ">=1.26" },

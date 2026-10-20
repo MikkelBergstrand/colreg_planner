@@ -28,6 +28,12 @@ scenario:
       tcpa_threshold: 50.0 # [s] react when TCPA < this
       d_pass: 75.0 # [m] desired passing distance
       intent: responsive
+      # search_dp only: 15 s edges let a plan move out far enough to cross
+      # astern of target_3 and overtake it on its starboard side, instead
+      # of closing in behind it first (7.5 s edges reach only ~20 m at
+      # milliAmpere scale).
+      search:
+        edge_s: 15.0
 
     target_1: # the non-responding vessel (V2 in the paper figure)
       encounter: head_on

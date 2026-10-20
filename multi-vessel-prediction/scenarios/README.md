@@ -27,6 +27,40 @@ viz_reference.yaml   every plotting option with its default (reference only, not
 Unknown keys under `prediction:` and in the VO parameters raise an error, so
 typos are caught.
 
+## Model mismatch
+
+By default a target runs the same decision rule and parameters the
+predictor assumes for it, so a compliant target is predicted almost exactly.
+To test against vessels that behave differently from the model:
+
+* **A different decision rule:** set the target's `policy` to `vo_kuwata`
+  (COLREGs-aware grid search) or `cto` (collision avoidance without COLREGs,
+  needs `sim_model: ct_decoupled`). The predictor keeps `prediction.policy_type`.
+* **Different parameters:** a vessel's `actual:` block holds VO parameters the
+  simulated vessel really uses; the predictor keeps the values set on the
+  vessel itself.
+
+  ```yaml
+  target_1:
+    d_pass: 75.0          # what the predictor assumes
+    actual:
+      d_pass: 45.0        # what the vessel really keeps
+      tcpa_threshold: 30.0
+  ```
+
+* **Random parameters:** `scenario.mismatch` draws each target's `actual`
+  values (ego is left alone) as its configured value times a uniform factor
+  in [1 - r, 1 + r]. Values set in `actual` are kept.
+
+  ```yaml
+  scenario:
+    mismatch:
+      seed: 1
+      jitter: {d_pass: 0.4, tcpa_threshold: 0.4, los_lookahead: 0.4}
+  ```
+
+`run_simulation.py` prints each vessel's `actual` values at startup.
+
 ## Adding a real-data window
 
 1. Find a `window_id` with `python scripts/tools/browse_encounters.py` (or
