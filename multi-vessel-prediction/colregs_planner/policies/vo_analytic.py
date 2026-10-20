@@ -46,6 +46,18 @@ AVOID_COLLISION : d_pass, no side constraint
 
 When no ColregsGraph is supplied all obstacles default to AVOID_COLLISION.
 
+Terrain
+-------
+With a HazardMap (seachart/hazard.py), a heading is blocked when sailing
+it for terrain_lookahead_s at the preferred speed comes within
+terrain_clearance of land or shoal (or, already inside that clearance, any
+closer than now). Of the free headings within the course budget, the
+contiguous arc holding the preferred heading (else the one nearest to it)
+replaces the symmetric budget: steps 2-5 run unchanged on that arc, so a
+vessel near a bank alters toward it only as far as the bank allows, and a
+cone it cannot clear there is relaxed as for any unreachable passing
+distance. If every heading is blocked, the least blocked one is kept.
+
 Notes
 -----
 - NED frame throughout; velocities are (vn, ve), angles clockwise positive.
@@ -58,6 +70,7 @@ import math
 
 import numpy as np
 
+from colregs_planner.seachart.hazard import HazardMap
 from colregs_planner.vessel.state import VesselState, CVAction
 from colregs_planner.vessel.base import BasePolicy
 from colregs_planner.colregs_graph.colregs_graph import VesselRole, ColregsGraph
@@ -499,6 +512,11 @@ class VOPolicyAnalytic(BasePolicy):
         course; 1 = maximum effort.  Keep slightly below 1 (e.g. 0.99): at
         exactly 1 the feasible set is a single heading and floating-point
         rounding decides whether it is found.
+    hazards : HazardMap | None
+        Land and shoals; None ignores terrain (see the module docstring).
+    terrain_lookahead_s, terrain_clearance : float
+        A heading is blocked if sailing it for terrain_lookahead_s [s] at
+        ref_speed comes within terrain_clearance [m] of a hazard.
 
     Class attributes
     ----------------
@@ -526,6 +544,9 @@ class VOPolicyAnalytic(BasePolicy):
         colregs_graph:        ColregsGraph | None       = None,
         own_vessel_idx:       int                       = 0,
         other_vessel_indices: list[int] | None          = None,
+        hazards:              HazardMap | None          = None,
+        terrain_lookahead_s:  float                     = 30.0,
+        terrain_clearance:    float                     = 5.0,
     ) -> None:
         if d_coll >= d_pass:
             raise ValueError(
@@ -577,6 +598,54 @@ class VOPolicyAnalytic(BasePolicy):
         self._own_vessel_idx       = own_vessel_idx
         self._other_vessel_indices = other_vessel_indices
         self._role_map_cache: dict | None = None
+        self.hazards             = hazards
+        self.terrain_lookahead_s = terrain_lookahead_s
+        self.terrain_clearance   = terrain_clearance
+        self._terrain_rays: tuple | None = None   # ((course, speed), heading offsets, ray points)
+
+    # Heading samples over the course budget for the terrain check, and
+    # sample points along each heading's ray.
+    _TERRAIN_STEP_DEG = 2.5
+    _TERRAIN_RAY_PTS  = 16
+
+    def _terrain_arc(self, own_n: float, own_e: float, pref_psi: float) -> tuple[Vec, float] | None:
+        """(centre unit vector, half-width) of the free heading arc that
+        replaces the course budget, or None when no hazard is in reach."""
+        hz = self.hazards
+        L = self.ref_speed * self.terrain_lookahead_s
+        d0 = float(hz.distance(np.array([own_n, own_e])))
+        if d0 > L + self.terrain_clearance:
+            return None
+        # Inside the clearance, only headings that do not close the hazard.
+        thr = min(self.terrain_clearance, d0 - 0.25 * hz.resolution)
+        # vo_rollout resets nominal_psi and ref_speed along a velocity
+        # sequence, so the rays are cached per (course, speed).
+        key = (self.nominal_psi, self.ref_speed)
+        if self._terrain_rays is None or self._terrain_rays[0] != key:
+            n = max(1, int(math.ceil(math.degrees(self.course_budget) / self._TERRAIN_STEP_DEG)))
+            offs = np.linspace(-self.course_budget, self.course_budget, 2 * n + 1)
+            psi = self.nominal_psi + offs
+            dirs = np.stack([np.cos(psi), np.sin(psi)], axis=1)
+            s = np.linspace(L / self._TERRAIN_RAY_PTS, L, self._TERRAIN_RAY_PTS)
+            self._terrain_rays = (key, offs, s[None, :, None] * dirs[:, None, :])
+        _, offs, rays = self._terrain_rays
+        clear = hz.distance(rays + np.array([own_n, own_e])).min(axis=1)
+        free = clear >= thr
+        if free.all():
+            return None
+        pref = math.atan2(math.sin(pref_psi - self.nominal_psi), math.cos(pref_psi - self.nominal_psi))
+        if not free.any():
+            lo = hi = int(np.argmax(clear))
+        else:
+            # Contiguous free runs; the one holding (else nearest to) pref.
+            idx = np.flatnonzero(free)
+            runs = np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1)
+            def gap(r):
+                return max(offs[r[0]] - pref, pref - offs[r[-1]], 0.0)
+            run = min(runs, key=gap)
+            lo, hi = int(run[0]), int(run[-1])
+        mid = self.nominal_psi + 0.5 * (offs[lo] + offs[hi])
+        return (math.cos(mid), math.sin(mid)), max(0.5 * (offs[hi] - offs[lo]), 1e-4)
 
     def set_colregs_graph(self, graph: ColregsGraph | None) -> None:
         """Replace the COLREGs graph (e.g. from a live classifier)."""
@@ -643,6 +712,19 @@ class VOPolicyAnalytic(BasePolicy):
             e   = _dx * _pu1 - _dy * _pu0
             psi_d      = self.nominal_psi + math.atan2(e, self.los_lookahead)
             v_pref_now = (self.ref_speed * math.cos(psi_d), self.ref_speed * math.sin(psi_d))
+
+            # --- Terrain: the free heading arc replaces the course budget -----
+            unit, budget = (float(self._v_pref_unit[0]), float(self._v_pref_unit[1])), self.course_budget
+            if self.hazards is not None:
+                arc = self._terrain_arc(own_n, own_e, psi_d)
+                if arc is not None:
+                    unit, budget = arc
+                    # Keep the preferred heading on the arc.
+                    off = math.atan2(math.sin(psi_d - math.atan2(unit[1], unit[0])),
+                                     math.cos(psi_d - math.atan2(unit[1], unit[0])))
+                    if abs(off) > budget:
+                        psi_d = math.atan2(unit[1], unit[0]) + math.copysign(budget, off)
+                        v_pref_now = (self.ref_speed * math.cos(psi_d), self.ref_speed * math.sin(psi_d))
 
             # --- 1. Obstacles that constrain this vessel ----------------------
             # Vessels with a COLREGs graph edge are always included; others
@@ -721,8 +803,8 @@ class VOPolicyAnalytic(BasePolicy):
             v_sel, radii, _, case = solve_vo_achievable(
                 v_pref            = v_pref_now,
                 obstacles         = obstacles,
-                nominal_unit      = self._v_pref_unit,
-                course_budget     = self.course_budget,
+                nominal_unit      = unit,
+                course_budget     = budget,
                 achievable_ratio  = self.achievable_ratio,
                 v_prev            = self._v_prev,
                 continuity_weight = self.continuity_weight,

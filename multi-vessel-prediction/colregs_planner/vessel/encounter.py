@@ -63,6 +63,7 @@ class ScenarioConfig:
     seed:          Optional[int]            = 42
     classifier:    dict[str, float]         = field(default_factory=dict)  # ColregsClassifier overrides
     hazards:       list[list[list[float]]]  = field(default_factory=list)  # land/shoal polygons, [north, east] vertices [m]
+    hazard_map:    Optional[object]         = None   # HazardMap of hazards (scenario_config.load_config)
 
     @property
     def n_steps(self) -> int:

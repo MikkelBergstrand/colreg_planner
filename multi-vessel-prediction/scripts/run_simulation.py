@@ -84,7 +84,6 @@ from colregs_planner.prediction.vo_rollout import (
 from colregs_planner.visualization.live_viz import (
     PlanCosts, PlanOverlay, VesselMeta, SimInfo, VizConfig, run_live, save_responding_plot, VESSEL_COLORS,
 )
-from colregs_planner.seachart.hazard import HazardMap
 from colregs_planner.seachart.loader import ChartBackground
 from colregs_planner.scenario_config import (
     PredictionConfig, build_vo_agent_config, load_config, sim_vessel_cfg,
@@ -195,7 +194,7 @@ def _build_policy(
     # nominal mission track — no COLREGs reasoning, no collision avoidance
     # (the STAND_ON role would otherwise still react at d_coll).
     if vi.intent == Intent.NON_RESPONSIVE and name in ("vo_kuwata", "vo_analytic", "cto"):
-        return NominalLOSPolicy(make_vo_policy(build_vo_agent_config(vcfg, vi)))
+        return NominalLOSPolicy(make_vo_policy(build_vo_agent_config(vcfg, vi, hazards=config.hazard_map)))
 
     if name in ("cv", "constant_velocity"):
         return ConstantVelocityPolicy()
@@ -211,7 +210,7 @@ def _build_policy(
 
     if name in ("vo_analytic", "vo_kuwata"):
         return make_vo_policy(
-            build_vo_agent_config(vcfg, vi, policy_type=name),
+            build_vo_agent_config(vcfg, vi, policy_type=name, hazards=config.hazard_map),
             own_vessel_idx       = vessel_idx,
             other_vessel_indices = _other_indices(config, vessel_idx),
         )
@@ -228,6 +227,7 @@ def _build_policy(
                 (vessel_cfgs or {vi.vessel_id: vcfg}).get(v.vessel_id, {}), v,
                 policy_type   = pred_cfg.policy_type if pred_cfg else "vo_analytic",
                 rollout_model = pred_cfg.rollout_model if pred_cfg else "ct_decoupled_ar",
+                hazards       = config.hazard_map,
             )
             for v in config.vessels
         }
@@ -235,8 +235,7 @@ def _build_policy(
         if search_cfg.hull is not None and search_cfg.hull.reanchor_s is None:
             # The hull model re-anchors as the policy does at each replan.
             search_cfg.hull.reanchor_s = float(vcfg.get("replan_s", 5.0))
-        if config.hazards:
-            search_cfg.hazards = HazardMap.from_polygons(config.hazards)
+        search_cfg.hazards = config.hazard_map
         # prediction.parallel_workers also sizes the planner's pool: "auto"
         # gives one worker per plan rollout, at most CPU cores - 1.
         n_workers = resolve_workers(
@@ -434,7 +433,7 @@ def _make_pred_fn(
     agent_configs = {
         vi.vessel_id: build_vo_agent_config(
             vessel_cfgs.get(vi.vessel_id, {}), vi,
-            policy_type=policy_type, rollout_model=rollout_model,
+            policy_type=policy_type, rollout_model=rollout_model, hazards=config.hazard_map,
         )
         for vi in vessel_inits
     }
@@ -710,7 +709,8 @@ def simulate_scenario(
         for vessel_idx, vi in enumerate(config.vessels):
             vcfg = vessel_cfgs.get(vi.vessel_id, {})
             cfg  = build_vo_agent_config(vcfg, vi, policy_type="vo_analytic",
-                                          rollout_model=responding_rollout_model)
+                                          rollout_model=responding_rollout_model,
+                                          hazards=config.hazard_map)
             pred_agent_configs[vi.vessel_id] = cfg
             responding_filters[vi.vessel_id] = RespondingFilter()
             responding_history[vi.vessel_id] = []

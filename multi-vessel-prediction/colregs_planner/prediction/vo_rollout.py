@@ -62,6 +62,7 @@ from colregs_planner.motion_models.adapters import build_adapter
 
 if TYPE_CHECKING:
     from colregs_planner.prediction.parallel import Pending, RolloutPool
+    from colregs_planner.seachart.hazard import HazardMap
 
 
 # ---------------------------------------------------------------------------
@@ -110,11 +111,14 @@ class VOAgentConfig:
     course_budget_deg:  float           = 70.0      # vo_analytic: largest course alteration from nominal [deg]; ~60 recommended, 180 = no limit
     achievable_ratio:   float           = 1       # vo_analytic: fraction alpha of the best reachable passing distance demanded when d_pass is out of reach; keep slightly below 1 (e.g. 0.99)
     continuity_weight:  float           = 0.9    # vo_analytic: lambda in Eq. 19, pull toward the previously selected heading (weight 1 = preferred heading)
+    terrain_lookahead_s: float          = 30.0   # vo_analytic with hazards: a heading is blocked if it comes within
+    terrain_clearance:  float           = 5.0    #   terrain_clearance [m] of a hazard within this many seconds
     nominal_psi:        Optional[float]           = None   # inferred from initial state
     ref_speed:          Optional[float]           = None   # inferred from initial state
     origin_north:       Optional[float]           = None   # mission start north [m]
     origin_east:        Optional[float]           = None   # mission start east  [m]
     pref_vel_seq:       Optional[np.ndarray]      = None   # (n_steps, 2) nominal [vn,ve] per rollout step
+    hazards:            Optional["HazardMap"]     = None   # land and shoals (vo_analytic only)
 
     def resolved_d_coll(self) -> float:
         """Explicit d_coll if set, else d_coll_ratio * d_pass."""
@@ -152,7 +156,7 @@ class VOAgentConfig:
 
 
 # Set per vessel at runtime, not from YAML.
-_RUNTIME_FIELDS = {"nominal_psi", "ref_speed", "origin_north", "origin_east", "pref_vel_seq"}
+_RUNTIME_FIELDS = {"nominal_psi", "ref_speed", "origin_north", "origin_east", "pref_vel_seq", "hazards"}
 
 
 def make_vo_policy(
@@ -195,6 +199,9 @@ def make_vo_policy(
             continuity_weight = cfg.continuity_weight,
             course_budget_deg = cfg.course_budget_deg,
             achievable_ratio  = cfg.achievable_ratio,
+            hazards           = cfg.hazards,
+            terrain_lookahead_s = cfg.terrain_lookahead_s,
+            terrain_clearance = cfg.terrain_clearance,
         )
     if cfg.policy_type == "vo_kuwata":
         return VOPolicyKuwata(

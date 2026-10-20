@@ -4,8 +4,8 @@
 # east bank, the target 22 m west of ego, 14 m from the west bank. The
 # lateral offset is short of d_pass, so ego would alter to starboard, which
 # takes it toward the east bank. scenario.hazards gives the banks to the
-# search planner (search_dp), which keeps search.weights.d_shore from them.
-# The target's VO does not see the banks yet.
+# search planner (search_dp), which keeps search.weights.d_shore from them,
+# and to every VO policy, which keeps terrain_clearance from them.
 #
 # Run:
 #   python scripts/run_simulation.py --config scenarios/simulation/milliampere/canal_head_on.yaml

@@ -17,6 +17,7 @@ from colregs_planner.colregs_graph.colregs_classifier import ColregsClassifier
 from colregs_planner.vessel.encounter import ScenarioConfig, build_scenario
 from colregs_planner.vessel.state import VesselInit, Intent
 from colregs_planner.prediction.vo_rollout import VOAgentConfig, _RUNTIME_FIELDS
+from colregs_planner.seachart.hazard import HazardMap
 from colregs_planner.visualization.live_viz import VizConfig
 
 
@@ -209,8 +210,11 @@ def load_config(path: Path) -> tuple[ScenarioConfig, dict[str, dict], VizConfig,
         )
     config.classifier = classifier_cfg
     # Static hazards (scenario.hazards): polygons of [north, east] vertices
-    # [m], e.g. the banks of a canal. The search planner keeps clear of them.
+    # [m], e.g. the banks of a canal. The search planner and every VO policy
+    # built with build_vo_agent_config(..., hazards=config.hazard_map) keep
+    # clear of them.
     config.hazards = [[[float(n), float(e)] for n, e in poly] for poly in (s.get("hazards") or [])]
+    config.hazard_map = HazardMap.from_polygons(config.hazards) if config.hazards else None
 
     pred_cfg = PredictionConfig.from_dict(p)
 

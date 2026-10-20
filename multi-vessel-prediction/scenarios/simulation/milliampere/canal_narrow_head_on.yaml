@@ -1,0 +1,65 @@
+# Head-on meeting in a synthetic canal, 30 m wide, running north: too narrow
+# for d_pass, so both vessels have to give up passing distance.
+#
+# Ego is 8 m from the east bank (search.weights.d_shore), the target 16 m
+# west of ego and 6 m from the west bank, just outside its VO's
+# terrain_clearance (5 m). Both would alter to starboard, toward their own
+# bank. Every VO policy, the target's and those the planner and predictor
+# roll out, sees scenario.hazards, so the planner predicts that the target
+# cannot give way and takes its share; without that, it holds course and
+# expects the target to turn toward its bank.
+#
+# Run:
+#   python scripts/run_simulation.py --config scenarios/simulation/milliampere/canal_narrow_head_on.yaml
+
+scenario:
+  dt: 0.5
+  t_horizon: 120.0
+  noise_std_pos: 0.0
+  noise_std_vel: 0.0
+  seed: 42
+  hazards:
+    - [[-100.0, 8.0], [300.0, 8.0], [300.0, 60.0], [-100.0, 60.0]]         # east bank
+    - [[-100.0, -22.0], [300.0, -22.0], [300.0, -80.0], [-100.0, -80.0]]   # west bank
+  vessels:
+    ego:
+      speed: 1.5
+      heading: 0.0
+      sim_model: milliampere
+      policy: search_dp
+      tcpa_threshold: 100.0
+      d_pass: 20.0
+      intent: responsive
+      los_lookahead: 30.0
+    target_1:
+      encounter: head_on
+      range: 120.0
+      lateral_offset_m: -16.0
+      speed: 1.2
+      sim_model: ct_decoupled_ar
+      policy: vo_analytic
+      tcpa_threshold: 100.0
+      d_pass: 20.0
+      intent: responsive
+      los_lookahead: 30.0
+  classifier:
+    d_u: 30.0
+    dcpa_max: 450.0
+    d_a: 3000.0
+prediction:
+  enabled: true
+  use_responding_filter: true
+  horizon: 100.0
+  update_dt: 0.5
+  policy_type: vo_analytic
+  rollout_model: ct_decoupled_ar
+  reclassify_in_rollout: false
+  top_k_hypotheses: 1
+viz:
+  trail_length: 0
+  realtime_factor: 100.0
+  responding_panel: true
+  padding: 30.0
+  vessel:
+    length: 12.0
+    width: 3.6

@@ -15,6 +15,10 @@ Typical usage
 -------------
     hazards = HazardMap.from_polygons([bank_east, bank_west], resolution=1.0)
     d = hazards.distance(tracks)          # (P, n) metres to the nearest bank
+
+A HazardMap pickles as its polygons, and each process builds the grid
+once (_cached): VO configs carrying it go to the rollout workers with
+every plan, and the grid itself is far larger than the polygons.
 """
 
 from __future__ import annotations
@@ -26,12 +30,20 @@ import numpy as np
 from matplotlib.path import Path as MplPath
 
 
-@dataclass
+@dataclass(eq=False)          # identity: one map per process (see _cached)
 class HazardMap:
     origin:     tuple[float, float]   # (north, east) of cell [0, 0] [m]
     resolution: float                 # cell size [m]
     sdf:        np.ndarray            # (n_north, n_east) signed distance [m]
     polygons:   list[np.ndarray]      # the source polygons, (k, 2) [north, east]
+    pad:        float = 100.0         # [m] grid margin around the polygons
+
+    def __post_init__(self) -> None:
+        # For distance(): the grid flattened, and its shape as bounds.
+        self._origin = np.asarray(self.origin, dtype=float)
+        self._hi     = np.array(self.sdf.shape, dtype=float) - 1
+        self._stride = self.sdf.shape[1]
+        self._flat   = self.sdf.astype(float).ravel()
 
     @classmethod
     def from_polygons(
@@ -64,20 +76,39 @@ class HazardMap:
                 s = np.clip((cells - a[k]) @ ab / max(ab @ ab, 1e-12), 0.0, 1.0)
                 dist = np.minimum(dist, np.linalg.norm(cells - (a[k] + s[:, None] * ab), axis=1))
         sdf = np.where(inside, -dist, dist).reshape(shape)
-        return cls(origin=(float(lo[0]), float(lo[1])), resolution=resolution,
-                   sdf=sdf.astype(np.float32), polygons=polys)
+        hz = cls(origin=(float(lo[0]), float(lo[1])), resolution=resolution,
+                 sdf=sdf.astype(np.float32), polygons=polys, pad=pad)
+        _CACHE.setdefault(hz._key(), hz)
+        return hz
+
+    def _key(self) -> tuple:
+        return (tuple(tuple(map(tuple, p.tolist())) for p in self.polygons), self.resolution, self.pad)
+
+    def __reduce__(self):
+        return (_cached, (self._key(),))
 
     def distance(self, points: np.ndarray) -> np.ndarray:
         """Signed distance [m] to the nearest hazard at points (..., 2)
         [north, east]: positive in open water, negative inside a hazard."""
         pts = np.asarray(points, dtype=float)
-        f = (pts - np.asarray(self.origin)) / self.resolution
-        hi = np.array(self.sdf.shape) - 1
-        f = np.clip(f, 0.0, hi)
-        i = np.minimum(f.astype(int), hi - 1)
+        f = (pts - self._origin) * (1.0 / self.resolution)
+        np.clip(f, 0.0, self._hi, out=f)
+        i = np.minimum(f.astype(np.intp), self._hi.astype(np.intp) - 1)
         t = f - i
-        g = self.sdf
-        i0, i1 = i[..., 0], i[..., 1]
+        k = i[..., 0] * self._stride + i[..., 1]          # flat index of the lower corner
+        g, st = self._flat, self._stride
         t0, t1 = t[..., 0], t[..., 1]
-        return ((1 - t0) * ((1 - t1) * g[i0, i1] + t1 * g[i0, i1 + 1])
-                + t0 * ((1 - t1) * g[i0 + 1, i1] + t1 * g[i0 + 1, i1 + 1]))
+        a = g[k] + t1 * (g[k + 1] - g[k])
+        b = g[k + st] + t1 * (g[k + st + 1] - g[k + st])
+        return a + t0 * (b - a)
+
+
+_CACHE: dict[tuple, HazardMap] = {}
+
+
+def _cached(key: tuple) -> HazardMap:
+    """The HazardMap for (polygons, resolution, pad), built once per process."""
+    if key not in _CACHE:
+        polygons, resolution, pad = key
+        HazardMap.from_polygons(polygons, resolution=resolution, pad=pad)
+    return _CACHE[key]
