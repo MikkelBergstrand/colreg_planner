@@ -25,6 +25,7 @@ from colregs_planner.planner_api.manoeuvre_search import (
 from colregs_planner.policies.search_dp import SearchDPPolicy
 from colregs_planner.prediction.vo_rollout import rank_hypotheses, vo_rollout
 from colregs_planner.scenario_config import build_vo_agent_config, load_config
+from colregs_planner.seachart.hazard import HazardMap
 from colregs_planner.vessel.state import Intent, VesselState
 
 REPO = Path(__file__).resolve().parents[1]
@@ -165,7 +166,7 @@ def test_plan_in_force_continues_edge_by_edge():
 
 def _scored(cost, cpa=0.0):
     from colregs_planner.planner_api.manoeuvre_search import ScoredPlan
-    return ScoredPlan(actions=(), cost=cost, min_dist={}, terms={"safety": cpa, "risk": 0.0})
+    return ScoredPlan(actions=(), cost=cost, min_dist={}, terms={"safety": cpa, "risk": 0.0, "ground": 0.0})
 
 
 def test_keep_unless_clearly_cheaper_or_less_safe():
@@ -335,6 +336,39 @@ def test_fixed_plan_stop_holds_vessel_in_rollout():
     assert [round(float(tr[k].north), 6) for k in (0, 5, 10)] == [0.0, 0.0, 0.0]
     assert tr[15].north == pytest.approx(7.5)
     assert all(s.psi == 0.0 for s in tr)                  # heading kept while stopped
+
+
+EAST_BANK = [[-100.0, 14.0], [300.0, 14.0], [300.0, 60.0], [-100.0, 60.0]]
+
+
+def test_hazard_map_signed_distance():
+    hz = HazardMap.from_polygons([EAST_BANK], resolution=1.0)
+    d = hz.distance(np.array([[0.0, 0.0], [0.0, 10.0], [50.0, 14.0], [50.0, 20.0], [0.5, 9.5]]))
+    assert d == pytest.approx([14.0, 4.0, 0.0, -6.0, 4.5])
+    edge = hz.origin[0] + hz.resolution * (hz.sdf.shape[0] - 1)
+    assert hz.distance(np.array([[5000.0, 0.0]])) == pytest.approx(hz.distance(np.array([[edge, 0.0]])))
+
+
+def test_terrain_cost_keeps_plans_off_the_bank():
+    plain, states, graph, _ = _planner(hull=HullModel())
+    canal, *_ = _planner(hull=HullModel(), hazards=HazardMap.from_polygons([EAST_BANK]))
+    a = plain.plan(states, graph, t=0.0)
+    b = canal.plan(states, graph, t=0.0)
+    assert all(p.terms["ground"] == 0.0 and p.min_shore == math.inf for p in a.ranked)
+    d_shore = canal.cfg.weights.d_shore
+    # Without the bank the planner turns hard to starboard, which runs aground.
+    assert min(p.min_shore for p in b.ranked if p.actions == a.best.actions) < 0.0
+    # With it, the best plan keeps (about) d_shore: the cost is soft.
+    assert b.best.min_shore > 0.75 * d_shore and b.best.terms["ground"] < 1.0
+    assert all(p.terms["ground"] > 0.0 for p in b.ranked if p.min_shore < d_shore)
+
+
+def test_canal_head_on_stays_off_the_bank():
+    (traj, *_), log, config, *_ = _simulate(REPO / "scenarios/simulation/milliampere/canal_head_on.yaml",
+                                            "search_dp")
+    hz = HazardMap.from_polygons(config.hazards)
+    ego = np.array([[s.north, s.east] for s in traj["ego"]])
+    assert hz.distance(ego).min() > 0.5 * log["ego"].planner.cfg.weights.d_shore
 
 
 def test_hull_model_overshoots_a_stop():

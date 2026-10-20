@@ -325,7 +325,9 @@ def test_milliampere_scenario_runs(path):
     config, vcfgs, _, pred = load_config(path)
     assert vcfgs["ego"]["sim_model"] == "milliampere"
     # A non-responsive ego is a test vessel, not the ship under our control.
-    expected = "vo_analytic" if vcfgs["ego"].get("intent") == "non_responsive" else "predictor_dp"
+    # Only search_dp plans around scenario.hazards.
+    expected = ("vo_analytic" if vcfgs["ego"].get("intent") == "non_responsive"
+                else "search_dp" if config.hazards else "predictor_dp")
     assert vcfgs["ego"]["policy"] == expected
     traj, *_ = _simulate(config, vcfgs, pred)
 

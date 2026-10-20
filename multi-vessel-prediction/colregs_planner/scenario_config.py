@@ -208,6 +208,9 @@ def load_config(path: Path) -> tuple[ScenarioConfig, dict[str, dict], VizConfig,
             f"Unknown scenario.classifier key(s) {sorted(unknown)}. Valid: {sorted(valid)}"
         )
     config.classifier = classifier_cfg
+    # Static hazards (scenario.hazards): polygons of [north, east] vertices
+    # [m], e.g. the banks of a canal. The search planner keeps clear of them.
+    config.hazards = [[[float(n), float(e)] for n, e in poly] for poly in (s.get("hazards") or [])]
 
     pred_cfg = PredictionConfig.from_dict(p)
 

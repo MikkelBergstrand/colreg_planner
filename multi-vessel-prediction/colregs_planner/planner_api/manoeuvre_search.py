@@ -105,6 +105,7 @@ long before that.
          + w_dev * mean_t (cross-track offset(t) / d_pass)^2
          + w_effort * sum_edges (|offset| / 60 deg + [slowed or stopped]) * edge_s / effort_ref_s
          + w_time * (time lost along the route over the horizon) / time_ref_s
+         + w_ground * max(0, (d_shore - g) / d_shore)^2 + w_aground * [g < 0]
 
 where d_j is the closest approach to vessel j over the horizon. The
 cross-track term is averaged over the horizon rather than taken at its end:
@@ -118,6 +119,13 @@ the plan is scored, and the other vessels react to it, along the hull's
 predicted track instead of the reference. The reference itself is
 unchanged, so DP still brakes as hard as it can.
 
+Terrain: with a HazardMap (seachart/hazard.py) set, g is the own ship's
+closest approach to land or shoal over the horizon, along the same track
+the plan is scored on (the hull's, with a HullModel). Both terms are 0
+without a map. Like safety, the terrain cost counts toward "less safe" in
+the hysteresis, so a plan in force that has turned toward the bank is
+dropped. The other vessels do not see the terrain yet.
+
 Hysteresis: the plan in force is continued edge by edge. Adopted at t0,
 at time t its continuation is its actions from edge k = floor((t - t0) /
 edge_s) on, padded with nominal, each edge at full length: (stop, stbd_60)
@@ -126,7 +134,7 @@ then (nominal, nominal). That is one of the grid plans, so it is scored
 anyway, and it is followed unless the cheapest plan is cheaper by more
 than max(hold_abs_margin, hold_rel_margin * its cost). The limit is
 safety: the continuation is dropped as soon as its CPA cost (safety +
-risk) exceeds the cheapest plan's by more than hold_safety_tol, whatever
+risk + ground) exceeds the cheapest plan's by more than hold_safety_tol, whatever
 the margin. The margin is what still lets the ship return to its route.
 Edges are re-anchored at full length rather than shortened by the time
 already sailed: a plan relies on replanning to extend it, so its literal
@@ -147,6 +155,7 @@ from colregs_planner.colregs_graph.colregs_classifier import ColregsClassifier, 
 from colregs_planner.colregs_graph.colregs_graph import ColregsGraph, VesselRole, apply_responsiveness
 from colregs_planner.prediction.parallel import RolloutPool, submit_rollout
 from colregs_planner.prediction.vo_rollout import VOAgentConfig, rank_hypotheses
+from colregs_planner.seachart.hazard import HazardMap
 from colregs_planner.vessel.state import Intent, VesselState, wrap_angle
 
 
@@ -191,6 +200,10 @@ class SearchWeights:
     risk_weight: float = 1.0
     risk_floor:  float = 0.1    # hypotheses below this weight stay out of the worst case
     pass_margin: float = 0.0    # [m] the safety cost aims for d_pass + pass_margin (see docstring)
+    # Terrain (with SearchConfig.hazards): keep d_shore from land and shoals.
+    w_ground:    float = 100.0
+    w_aground:   float = 1000.0
+    d_shore:     float = 8.0    # [m] from the ship's centre: half the beam plus the hull model's error
     # Hysteresis (see the module docstring): keep the previous plan unless a
     # fresh one is this much cheaper, or the previous one is less safe.
     hold_abs_margin: float = 0.1
@@ -205,6 +218,7 @@ COST_CATEGORIES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "COLREGs": (("colregs",),           ("w_port", "w_give_way", "w_stand_on")),
     "Route":   (("deviation", "time"),  ("w_dev", "w_time")),
     "Effort":  (("effort",),            ("w_effort",)),
+    "Terrain": (("ground",),            ("w_ground", "w_aground")),
 }
 
 
@@ -274,6 +288,7 @@ class SearchConfig:
     actions:   tuple[SearchAction, ...] = DEFAULT_ACTIONS
     weights:   SearchWeights = field(default_factory=SearchWeights)
     hull:      Optional[HullModel] = None   # score along the hull's track (see docstring)
+    hazards:   Optional[HazardMap] = None   # land and shoals (see docstring)
 
 
 @dataclass
@@ -282,6 +297,7 @@ class ScoredPlan:
     cost:      float
     min_dist:  dict[str, float]          # worst case over hypotheses, per other vessel (see d_j above)
     terms:     dict[str, float]
+    min_shore: float = math.inf          # closest approach to a hazard (g above) [m]
 
 
 @dataclass
@@ -601,6 +617,11 @@ class ManoeuvreSearchPlanner:
             progress = ((end.north - states[self.own_id].north) * math.cos(psi0)
                         + (end.east - states[self.own_id].east) * math.sin(psi0))
             time_lost = max(0.0, H * c.plan_dt - progress / own_cfg.ref_speed)
+            # Closest approach to land or shoal along the scored own track.
+            shore = (float(np.min(c.hazards.distance(np.array([[s.north, s.east] for s in own_tr]))))
+                     if c.hazards is not None else math.inf)
+            ground = (w.w_ground * max(0.0, (w.d_shore - shore) / w.d_shore) ** 2
+                      + w.w_aground * (shore < 0.0))
 
             terms = {
                 "safety":   sum(p * s for (_, p), s in zip(hyps, safety)),
@@ -611,9 +632,10 @@ class ManoeuvreSearchPlanner:
                 "deviation": w.w_dev * float(np.mean((xtrack / d_pass) ** 2)),
                 "effort":   w.w_effort * effort,
                 "time":     w.w_time * time_lost / w.time_ref_s,
+                "ground":   ground,
             }
             plan = ScoredPlan(actions=actions, cost=sum(terms.values()),
-                              min_dist=worst_d, terms=terms)
+                              min_dist=worst_d, terms=terms, min_shore=shore)
             scored.append((plan, rollouts, refs[i] if refs else None))
 
         scored.sort(key=lambda x: x[0].cost)
@@ -637,11 +659,11 @@ class ManoeuvreSearchPlanner:
 
     def _keep(self, kept: ScoredPlan, fresh: ScoredPlan) -> bool:
         """Keep the plan in force over the cheapest fresh plan: unless it is
-        less safe (CPA cost higher by more than hold_safety_tol), only a
-        saving above the margin justifies switching."""
+        less safe (CPA and terrain cost higher by more than hold_safety_tol),
+        only a saving above the margin justifies switching."""
         w = self.cfg.weights
         def cpa(p: ScoredPlan) -> float:
-            return p.terms["safety"] + p.terms["risk"]
+            return p.terms["safety"] + p.terms["risk"] + p.terms["ground"]
         if cpa(kept) > cpa(fresh) + w.hold_safety_tol + 1e-9:
             return False
         return kept.cost - fresh.cost <= max(w.hold_abs_margin, w.hold_rel_margin * kept.cost)

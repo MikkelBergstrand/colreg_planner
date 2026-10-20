@@ -776,7 +776,7 @@ def _render_debug(
 
 # Cost categories, in stack order. Hues kept clear of VESSEL_COLORS so a
 # category never reads as a vessel.
-COST_COLORS = ["#6250d6", "#1baf7a", "#eda100", "#e87ba4"]
+COST_COLORS = ["#6250d6", "#1baf7a", "#eda100", "#e87ba4", "#8b6a45"]
 
 
 def _draw_cost_panel(ax: plt.Axes, legend_ax: plt.Axes, costs: PlanCosts,
@@ -2136,6 +2136,7 @@ def run_live(
     responding_history: Optional[dict[str, list[float]]]     = None,
     stop_time:          Optional[float]                      = None,
     goals:              Optional[dict[str, tuple[float, float]]] = None,
+    chart_bg:           Optional["ChartBackground"]          = None,
 ) -> None:
     vc        = vc or VizConfig.default()
     speed     = speed     or vc.realtime_factor
@@ -2154,6 +2155,9 @@ def run_live(
                          show_colregs_graph=show_cg,
                          responding_history=responding_history,
                          goals=goals)
+    if chart_bg is not None:
+        from colregs_planner.visualization.map_background import render_chart_background
+        render_chart_background(viz.ax, chart_bg)
 
     if save_path:
         viz.save_animation(trajectories, save_path,

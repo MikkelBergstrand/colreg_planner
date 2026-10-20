@@ -84,6 +84,8 @@ from colregs_planner.prediction.vo_rollout import (
 from colregs_planner.visualization.live_viz import (
     PlanCosts, PlanOverlay, VesselMeta, SimInfo, VizConfig, run_live, save_responding_plot, VESSEL_COLORS,
 )
+from colregs_planner.seachart.hazard import HazardMap
+from colregs_planner.seachart.loader import ChartBackground
 from colregs_planner.scenario_config import (
     PredictionConfig, build_vo_agent_config, load_config, sim_vessel_cfg,
 )
@@ -233,6 +235,8 @@ def _build_policy(
         if search_cfg.hull is not None and search_cfg.hull.reanchor_s is None:
             # The hull model re-anchors as the policy does at each replan.
             search_cfg.hull.reanchor_s = float(vcfg.get("replan_s", 5.0))
+        if config.hazards:
+            search_cfg.hazards = HazardMap.from_polygons(config.hazards)
         # prediction.parallel_workers also sizes the planner's pool: "auto"
         # gives one worker per plan rollout, at most CPU cores - 1.
         n_workers = resolve_workers(
@@ -1082,7 +1086,9 @@ def main() -> None:
              colregs_graphs=colregs_graphs,
              responding_history=responding_history or None,
              stop_time=args.stop_time,
-             goals=goals)
+             goals=goals,
+             chart_bg=(ChartBackground(land_polys=[np.array(p)[:, ::-1] for p in config.hazards])
+                       if config.hazards else None))
 
     # Standalone p(responding)-vs-time figure (viz.responding_plot), cropped to
     # viz.responding_plot_window if set. Independent of the live panel.

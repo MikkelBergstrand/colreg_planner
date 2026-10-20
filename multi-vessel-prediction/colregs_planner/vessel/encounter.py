@@ -62,6 +62,7 @@ class ScenarioConfig:
     noise_std_vel: float                    = 0.0
     seed:          Optional[int]            = 42
     classifier:    dict[str, float]         = field(default_factory=dict)  # ColregsClassifier overrides
+    hazards:       list[list[list[float]]]  = field(default_factory=list)  # land/shoal polygons, [north, east] vertices [m]
 
     @property
     def n_steps(self) -> int:
