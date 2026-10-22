@@ -33,7 +33,7 @@ class RespondingFilter:
 
     def __init__(
         self,
-        p_responsive_init: float = 0.99,
+        p_responsive_init: float = 0.5,
         epsilon_c        : float = 1e-5,
         sigma_theta_deg  : float = 3.0,
         min_speed_for_course: float = 0.5,
