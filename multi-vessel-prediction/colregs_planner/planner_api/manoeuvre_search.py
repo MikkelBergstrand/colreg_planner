@@ -510,7 +510,11 @@ class ManoeuvreSearchPlanner:
 
         # Submit every rollout first, so that with a pool they all run in parallel.
         sequences = self._sequences()
-        own_cfgs = [replace(own_cfg, pref_vel_seq=self.velocity_sequence(a)) for a in sequences]
+        # The own ship sails each plan as planned, without its VO's terrain
+        # check: that would bend the plan away from the banks, and the
+        # terrain cost below judges the plan itself.
+        own_cfgs = [replace(own_cfg, pref_vel_seq=self.velocity_sequence(a), hazards=None)
+                    for a in sequences]
         refs = hulls = None
         if c.hull is not None:
             # The own ship ignores traffic, so its reference is the same alone.

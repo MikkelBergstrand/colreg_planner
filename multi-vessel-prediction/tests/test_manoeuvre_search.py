@@ -363,6 +363,19 @@ def test_terrain_cost_keeps_plans_off_the_bank():
     assert all(p.terms["ground"] > 0.0 for p in b.ranked if p.min_shore < d_shore)
 
 
+def test_own_plans_are_sailed_as_planned_near_terrain():
+    # The VO configs carry the hazards too (step 3), but the own ship's plans
+    # must not be bent away from the bank by its VO: the terrain cost judges them.
+    hz = HazardMap.from_polygons([EAST_BANK])
+    plain, states, graph, _ = _planner(hazards=hz)
+    aware, *_ = _planner(hazards=hz)
+    aware.configs = {vid: replace(cfg, hazards=hz) for vid, cfg in aware.configs.items()}
+    a = {p.actions: p.min_shore for p in plain.plan(states, graph, t=0.0).ranked}
+    b = {p.actions: p.min_shore for p in aware.plan(states, graph, t=0.0).ranked}
+    assert b == pytest.approx(a)
+    assert min(a.values()) < 0.0                         # some plans do run aground
+
+
 def test_canal_head_on_stays_off_the_bank():
     (traj, *_), log, config, *_ = _simulate(REPO / "scenarios/simulation/milliampere/canal_head_on.yaml",
                                             "search_dp")
