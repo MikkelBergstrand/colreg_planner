@@ -5,9 +5,10 @@
 # west of ego and 6 m from the west bank, just outside its VO's
 # terrain_clearance (5 m). Both would alter to starboard, toward their own
 # bank. Every VO policy, the target's and those the planner and predictor
-# roll out, sees scenario.hazards, so the planner predicts that the target
-# cannot give way and takes its share; without that, it holds course and
-# expects the target to turn toward its bank.
+# roll out, sees scenario.hazards, so the target keeps its clearance and the
+# planner predicts it will; without that, the target turns to within ~2 m
+# of its bank. Ego cannot alter either without coming inside d_shore, so it
+# holds course and they pass at ~16 m.
 #
 # Run:
 #   python scripts/run_simulation.py --config scenarios/simulation/milliampere/canal_narrow_head_on.yaml

@@ -1,0 +1,64 @@
+# Head-on meeting in the 50 m canal of canal_head_on.yaml, with the other
+# vessel on the wrong side: coming down the canal on its port (east) side,
+# against Rule 9(a), dead ahead of ego on a collision course, and not
+# complying with the COLREGs (intent: non_responsive, it holds its course).
+#
+# Ego is 14 m from the east bank, so it cannot pass the target to
+# starboard and keep search.weights.d_shore. It must slow, stop, or pass
+# to port across the canal, which the COLREGs penalties discourage until
+# the responding filter believes the target will not give way.
+#
+# Run:
+#   python scripts/run_simulation.py --config scenarios/simulation/milliampere/canal_head_on_wrong_side.yaml
+
+scenario:
+  dt: 0.5
+  t_horizon: 120.0
+  noise_std_pos: 0.0
+  noise_std_vel: 0.0
+  seed: 42
+  hazards:
+    - [[-100.0, 14.0], [300.0, 14.0], [300.0, 60.0], [-100.0, 60.0]]       # east bank
+    - [[-100.0, -36.0], [300.0, -36.0], [300.0, -80.0], [-100.0, -80.0]]   # west bank
+  vessels:
+    ego:
+      speed: 1.5
+      heading: 0.0
+      sim_model: milliampere
+      policy: search_dp
+      tcpa_threshold: 100.0
+      d_pass: 20.0
+      intent: responsive
+      los_lookahead: 30.0
+    target_1:
+      encounter: head_on
+      range: 120.0
+      lateral_offset_m: 0.0
+      speed: 1.2
+      sim_model: ct_decoupled_ar
+      policy: vo_analytic
+      tcpa_threshold: 100.0
+      d_pass: 20.0
+      intent: non_responsive
+      los_lookahead: 30.0
+  classifier:
+    d_u: 30.0
+    dcpa_max: 450.0
+    d_a: 3000.0
+prediction:
+  enabled: true
+  use_responding_filter: true
+  horizon: 100.0
+  update_dt: 0.5
+  policy_type: vo_analytic
+  rollout_model: ct_decoupled_ar
+  reclassify_in_rollout: false
+  top_k_hypotheses: 1
+viz:
+  trail_length: 0
+  realtime_factor: 100.0
+  responding_panel: true
+  padding: 30.0
+  vessel:
+    length: 12.0
+    width: 3.6
