@@ -576,11 +576,13 @@ class ManoeuvreSearchPlanner:
                 c_h = 0.0
                 roles = {idx_to_vid[j]: r for j, r in graph.get_roles(own_idx)
                          if idx_to_vid[j] in approaching}
-                head_on = VesselRole.HEAD_ON in roles.values()
+                head_on = any(r == VesselRole.HEAD_ON and assignment.get(vid) == Intent.RESPONSIVE
+                              for vid, r in roles.items())
                 give_way = VesselRole.GIVE_WAY in roles.values()
                 give_way_open = any(r == VesselRole.GIVE_WAY and vid in give_way_conflict
                                     for vid, r in roles.items())
                 head_on_open = any(r == VesselRole.HEAD_ON and vid in head_on_conflict
+                                   and assignment.get(vid) == Intent.RESPONSIVE
                                    for vid, r in roles.items())
                 if (head_on or give_way) and any(a.course_offset < 0 for a in actions):
                     c_h += w.w_port

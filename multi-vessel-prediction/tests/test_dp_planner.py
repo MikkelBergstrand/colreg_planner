@@ -93,3 +93,17 @@ def test_input_errors():
     with pytest.raises(KeyError, match="ego"):
         planner.update(0.0, {"other": {"north": 0.0, "east": 0.0, "course_deg": 0.0, "speed": 1.0}})
     planner.close()
+
+
+def test_colav_active_follows_the_encounter():
+    own = {"north": 0.0, "east": 0.0, "course_deg": 0.0, "speed": 1.5}
+    with _planner() as planner:
+        assert not planner.colav_active
+        planner.update(0.0, {"ego": own})
+        assert not planner.colav_active                          # no traffic
+        planner.update(0.5, {"ego": own, "tgt": _target(120.0, 0.0, 180.0, 1.2, 0.0)})
+        assert planner.colav_active                              # head-on within d_a
+        past = {"north": -200.0, "east": 60.0, "course_deg": 180.0, "speed": 1.2}
+        for k in range(2, 40):                                   # passed: astern, diverging
+            planner.update(k * DT, {"ego": own, "tgt": past})
+        assert not planner.colav_active

@@ -33,6 +33,7 @@ Typical usage
                "257123000": {...}, ...}
         ref = planner.update(t, obs)                 # DPReference
         dp_controller.set_reference(ref.north, ref.east, ref.heading_deg)
+        if planner.colav_active: ...                 # own ship in a COLREGs encounter
 
     # A faster control loop can sample the committed plan in between:
     ref = planner.reference(t_now)
@@ -178,6 +179,7 @@ class ColregsDPPlanner:
         self._plan_t: Optional[float] = None
         self._own: Optional[VesselState] = None
         self._t: Optional[float] = None
+        self._graph = None
 
     # ------------------------------------------------------------------
     # Inputs
@@ -219,7 +221,7 @@ class ColregsDPPlanner:
         for vid in states:
             self._index.setdefault(vid, len(self._index))
         graph = self._classifier.update({self._index[vid]: s for vid, s in states.items()})
-        self._own, self._t = states[self.own_id], t
+        self._own, self._t, self._graph = states[self.own_id], t, graph
 
         replanned = False
         if force_replan or self._plan_t is None or t - self._plan_t >= self.replan_s - 1e-9:
@@ -257,6 +259,15 @@ class ColregsDPPlanner:
         h = min(tau + pdt, end) - tau
         vn, ve = ((n1 - n) / h, (e1 - e) / h) if h > 1e-9 else (0.0, 0.0)
         return DPReference(t, n, e, math.degrees(psi) % 360.0, vn, ve, plan, self._plan_t)
+
+    @property
+    def colav_active(self) -> bool:
+        """True while the own ship is in a COLREGs encounter with any vessel,
+        as classified at the latest update(): from when a vessel within d_a
+        has a DCPA below dcpa_max until it is past, diverging beyond d_u.
+        Uses the planner's own classifier, so it agrees with the roles the
+        plans are scored against. False before the first update()."""
+        return self._graph is not None and bool(self._graph.get_roles(self._index[self.own_id]))
 
     @property
     def last_plan(self) -> Optional[SearchResult]:
